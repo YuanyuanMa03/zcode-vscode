@@ -1,0 +1,157 @@
+{
+  "name": "zcode-vscode",
+  "displayName": "ZCode for VSCode",
+  "description": "ZCode AI 编程助手集成:在侧边栏与 ZCode CLI 对话,流式输出、会话续接、附件上下文。",
+  "version": "0.1.0",
+  "publisher": "mayuanyuan",
+  "license": "MIT",
+  "icon": "media/icon.png",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "AI",
+    "Chat",
+    "Programming Languages",
+    "Other"
+  ],
+  "keywords": [
+    "zcode",
+    "ai",
+    "chat",
+    "assistant"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "zcode",
+          "title": "ZCode",
+          "icon": "media/activity-icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "zcode": [
+        {
+          "type": "webview",
+          "id": "zcode.chat",
+          "name": "Chat"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "zcode.openChat",
+        "title": "ZCode: 打开聊天"
+      },
+      {
+        "command": "zcode.newConversation",
+        "title": "ZCode: 新建会话",
+        "icon": "$(add)"
+      },
+      {
+        "command": "zcode.stop",
+        "title": "ZCode: 停止当前任务",
+        "icon": "$(debug-stop)"
+      },
+      {
+        "command": "zcode.attachActiveFile",
+        "title": "ZCode: 附加当前文件到下一次提问",
+        "icon": "$(attach)"
+      },
+      {
+        "command": "zcode.askAboutSelection",
+        "title": "ZCode: 询问选中文本"
+      },
+      {
+        "command": "zcode.showDoctor",
+        "title": "ZCode: 诊断环境 (doctor)"
+      },
+      {
+        "command": "zcode.openSettings",
+        "title": "ZCode: 打开设置"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "zcode.newConversation",
+          "group": "navigation@1",
+          "when": "view == zcode.chat"
+        },
+        {
+          "command": "zcode.stop",
+          "group": "navigation@2",
+          "when": "view == zcode.chat"
+        }
+      ],
+      "editor/context": [
+        {
+          "command": "zcode.askAboutSelection",
+          "group": "navigation@90",
+          "when": "editorHasSelection"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "ZCode",
+      "properties": {
+        "zcode.nodePath": {
+          "type": "string",
+          "default": "~/.zcode/server/node",
+          "markdownDescription": "ZCode 桌面版自带 Node 的路径(用于运行 CLI)。留空或文件不存在时依次回退:`~/.zcode/server/node` → 系统 `node`。"
+        },
+        "zcode.cliPath": {
+          "type": "string",
+          "default": "~/.zcode/server/agents/glm/zcode.cjs",
+          "markdownDescription": "ZCode CLI 入口(zcode.cjs)。默认使用 ZCode 桌面版自带的 agent CLI。"
+        },
+        "zcode.mode": {
+          "type": "string",
+          "default": "yolo",
+          "enum": [
+            "build",
+            "edit",
+            "plan",
+            "yolo"
+          ],
+          "enumDescriptions": [
+            "构建:可执行全部工具(与 CLI --prompt 默认一致)",
+            "编辑:允许编辑、执行需确认语义由 CLI 决定",
+            "规划:只读规划模式",
+            "全自动:所有工具自动放行(CLI headless 默认)"
+          ],
+          "markdownDescription": "权限模式,对应 CLI `--mode`。headless 默认 yolo(全自动),请谨慎选择。"
+        },
+        "zcode.autoAttachActiveFile": {
+          "type": "boolean",
+          "default": false,
+          "description": "发送消息时自动附加当前活跃编辑器文件(等价于每次 --attach)。"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "node esbuild.js",
+    "watch": "node esbuild.js --watch",
+    "typecheck": "tsc --noEmit",
+    "package": "tsc --noEmit && node esbuild.js --production",
+    "vsix": "vsce package --no-dependencies"
+  },
+  "devDependencies": {
+    "@types/marked": "^6.0.0",
+    "@types/node": "^20.14.0",
+    "@types/vscode": "^1.85.0",
+    "esbuild": "^0.24.0",
+    "typescript": "^5.6.0",
+    "@vscode/vsce": "^3.1.0"
+  },
+  "dependencies": {
+    "marked": "^14.1.0"
+  }
+}
