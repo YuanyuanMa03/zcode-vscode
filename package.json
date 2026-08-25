@@ -140,6 +140,7 @@
     "compile": "node esbuild.js",
     "watch": "node esbuild.js --watch",
     "typecheck": "tsc --noEmit",
+    "test": "node --test",
     "package": "tsc --noEmit && node esbuild.js --production",
     "vsix": "vsce package --no-dependencies"
   },
