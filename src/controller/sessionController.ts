@@ -464,6 +464,26 @@ export class SessionController {
     return asRec(await client.request('session/usage', { sessionId: sid }));
   }
 
+  /** 工作区可选模型目录(workspace/readState → modelCatalog.available) */
+  async getWorkspaceModels(): Promise<{ label: string; providerLabel: string; providerId: string; modelId: string }[]> {
+    const client = await this.ensureStarted();
+    const state = asRec(await client.request('workspace/readState', { workspace: this.workspaceRef() }));
+    const catalog = asRec(state.modelCatalog);
+    const available = Array.isArray(catalog.available) ? catalog.available : [];
+    return available
+      .map((m) => {
+        const r = asRec(m);
+        const ref = asRec(r.ref);
+        return {
+          label: asStr(r.label, asStr(ref.modelId)),
+          providerLabel: asStr(r.providerLabel),
+          providerId: asStr(ref.providerId),
+          modelId: asStr(ref.modelId),
+        };
+      })
+      .filter((m) => m.modelId && m.providerId);
+  }
+
   /** UI 应答权限:原样回传选中 option 的预嵌 response(文档 §12 实测) */
   answerPermission(key: string, optionId: string): boolean {
     const perm = this.state.current.pendingPermissions.find((p) => p.key === key);

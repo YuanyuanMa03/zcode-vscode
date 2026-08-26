@@ -1,32 +1,45 @@
 # ZCode for VSCode
 
-在 VSCode 侧边栏直接使用 ZCode AI 编程助手:与 ZCode CLI 对话、流式输出、多轮会话续接、附件上下文。
+在 VSCode 侧边栏获得与 ZCode 桌面版几乎一致的 AI 编程体验:常驻协议进程、流式对话、工具调用卡片、权限审批、多会话管理、检查点回滚。
 
-![Version](https://img.shields.io/badge/version-0.1.0-blue) ![License](https://img.shields.io/badge/license-MIT-green)
+![Version](https://img.shields.io/badge/version-0.2.0-blue) ![License](https://img.shields.io/badge/license-MIT-green)
+
+## v0.2 架构(协议原生)
+
+```
+VSCode 扩展宿主
+├── protocol/     ZCode Protocol v1 客户端(NDJSON stdio)
+│   ├── transport 帧收发/残行缓冲/stderr 日志
+│   └── client    请求配对/超时/interaction 去重(重发帧应答最新 id)
+├── controller/   SessionController:会话生命周期、事件投影(25 种 session/event)、
+│                 崩溃自动重启(≤3 次)+ resume/afterSeq 续订、33ms 节流 UIState
+└── webview       纯渲染器:消息/部件/流式光标/工具卡/权限卡/会话下拉/上下文条
+        ↕
+~/.zcode/server/node zcode.cjs app-server --stdio(与桌面版同一协议进程)
+```
 
 ## 功能
 
-- **侧边栏聊天**:活动栏 ZCode 图标 → Chat,输入问题回车即发,回复实时流式渲染(支持 Markdown/代码块)
-- **多轮会话**:同一对话自动通过 CLI `--continue` 续接上下文;"新建会话"按钮随时开新话题
-- **工作区感知**:以当前工作区为 `--cwd` 运行,ZCode 可直接读写、执行项目内文件
-- **附件**:通过命令或状态栏把当前文件 `--attach` 到下一次提问;支持自动附加活跃文件
-- **选区提问**:编辑器右键 → "ZCode: 询问选中文本",选区自动引用进输入框
-- **状态栏**:实时显示就绪/运行中/未配置三种状态,点击直达聊天
-- **环境诊断**:`ZCode: 诊断环境 (doctor)` 一键查看 CLI 运行时状态
+- **免冷启动多轮对话**:常驻进程,第二问起仅模型延迟;`model.streaming`/`part.delta` 实时渲染
+- **工具卡片**:工具名/状态/耗时/输入输出(可折叠),文件路径一键跳转
+- **权限审批**:风险分级配色(low/medium/high/critical),Allow once / Always allow in this project / Deny,与桌面版同款选项
+- **用户输入表单**:AskUserQuestion、计划审批(plan approval)
+- **会话管理**:启动自动恢复最近会话;下拉切换历史会话;一键新建 / fork(检查点分叉)/ rewind(对话回滚)
+- **模型与模式**:模型选择器(真实 workspace/readState 目录)、plan/build/edit/yolo 切换
+- **上下文注入**:当前文件/选区引用(chip 形态,编辑器右键"询问选中文本")
+- **改动通知**:turn 结束后 Write/Edit 落盘文件弹通知,一键查看 git diff
+- **steer**:运行中回车追加指令;停止按钮即时中断(session/stop 旁路队列)
 
 ## 前置条件
 
-本插件复用 **ZCode 桌面版** 自带的 CLI,默认路径:
+复用 ZCode 桌面版自带的 CLI(默认路径):
 
 | 组件 | 默认路径 |
 |---|---|
 | Node | `~/.zcode/server/node` |
 | CLI | `~/.zcode/server/agents/glm/zcode.cjs` |
 
-若路径不同或使用独立安装的 CLI,在设置(`zcode.nodePath` / `zcode.cliPath`)中指定。
-
-CLI 需要 model 配置。若 `~/.zcode/cli/config.json` 中没有 `model` 键,headless 模式会报
-`Model config is missing`。参考配置(与桌面版同一 provider):
+CLI 需要 model 配置(`~/.zcode/cli/config.json`):
 
 ```json
 {
@@ -42,63 +55,42 @@ CLI 需要 model 配置。若 `~/.zcode/cli/config.json` 中没有 `model` 键,h
 }
 ```
 
-> 注意:直接整段复制桌面版 `~/.zcode/v2/config.json` 的 `provider` 会因 CLI 端 schema 校验失败而被整体忽略(实测 0.15.2),只保留 `name/kind/options/enabled` 精简字段即可。
+> 不要整段复制桌面版 `v2/config.json` 的 provider(CLI 端 schema 校验会静默忽略);只保留 `name/kind/options/enabled`。
 
-## 安装
-
-### 从 VSIX(本仓库已构建)
+## 安装与构建
 
 ```bash
-code --install-extension zcode-vscode-0.1.0.vsix
+code --install-extension zcode-vscode-0.2.0.vsix
+# 或从源码
+npm install && npm run package && npx vsce package --no-dependencies
 ```
-
-### 从源码构建
-
-```bash
-npm install
-npm run package      # typecheck + esbuild production
-npx vsce package --no-dependencies
-```
-
-## 使用
-
-1. 重载 VSCode 窗口后,点击活动栏 ZCode 图标(图标过多时收在 "Additional Views" / `···` 溢出区,可拖出固定)
-2. 在输入框输入问题,Enter 发送(Shift+Enter 换行)
-3. 运行中可点击"停止"终止本轮任务(杀整个进程组)
-4. 命令面板(Cmd+Shift+P)可用命令:
-   - `ZCode: 打开聊天`
-   - `ZCode: 新建会话`
-   - `ZCode: 停止当前任务`
-   - `ZCode: 附加当前文件到下一次提问`
-   - `ZCode: 询问选中文本`(也可编辑器右键)
-   - `ZCode: 诊断环境 (doctor)`
 
 ## 配置项
 
 | 键 | 默认 | 说明 |
 |---|---|---|
-| `zcode.nodePath` | `~/.zcode/server/node` | 运行 CLI 的 Node;不存在时回退系统 `node` |
+| `zcode.nodePath` | `~/.zcode/server/node` | 运行 CLI 的 Node |
 | `zcode.cliPath` | `~/.zcode/server/agents/glm/zcode.cjs` | CLI 入口 |
-| `zcode.mode` | `yolo` | 权限模式 `build/edit/plan/yolo`,对应 CLI `--mode`。**yolo = 所有工具自动放行**,注意风险 |
-| `zcode.autoAttachActiveFile` | `false` | 每次发送自动附加当前活跃文件 |
-
-## 已知限制(实测 CLI 0.15.2)
-
-- `--settings` 参数在帮助中列出但实际不可用(`Unknown option`)
-- `--max-turns` 与其他参数组合会触发参数解析 bug(打印帮助),本插件不使用
-- TUI(`zcode tui`)在 node-bundle 发行形态下缺 `@zcode/tui` 依赖无法启动,因此本插件走 headless 路径而非终端复用
-- 未信任(Restricted Mode)工作区内扩展不会激活,请信任工作区后使用
+| `zcode.mode` | `yolo` | 新会话默认权限模式(**yolo=全自动放行,介意请改 build**) |
+| `zcode.autoAttachActiveFile` | `false` | 兼容旧版设置(协议模式下用上下文 chip) |
 
 ## 开发
 
-```
-src/extension.ts      激活、命令、状态栏
-src/zcodeRunner.ts    CLI 定位/子进程管理/流式输出/进程组终止
-src/chatView.ts       侧边栏 WebView Provider + 消息协议
-src/webview/main.ts   聊天前端(流式 Markdown 渲染)
+```bash
+npm run typecheck          # tsc --noEmit
+node --test src/protocol/client.test.ts   # 协议层单测
+node scripts/protocol-smoke.ts [ws] [prompt] [mode]  # 真实 CLI 集成冒烟
+node scripts/e2e-cdp.mjs   # 隔离 VSCode 实例 CDP 端到端(含权限流)
 ```
 
-调试:F5 打开扩展开发宿主窗口。
+代码结构见 `docs/spec-v0.2.md` 与 `docs/tickets-v0.2.md`。
+
+## 已知限制
+
+- 协议为 ZCode 内部契约(逆向自 0.13.3 双 bundle,实测 0.15.2 兼容),CLI 大版本升级可能破坏兼容
+- 权限/工具卡在 webview 全量重渲染时 `<details>` 展开状态会重置(长对话场景待优化)
+- 编辑器内联 diff 审查(accept/reject)计划 v0.3(参考 Claude Code 双虚拟 FS 方案)
+- 未信任(Restricted Mode)工作区扩展不激活
 
 ## License
 

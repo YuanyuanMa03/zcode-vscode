@@ -88,6 +88,7 @@ export class ZcodeChatView implements vscode.WebviewViewProvider {
     this.unsubscribe = ctl.onStateChange((state) => {
       this.post({ t: 'state', state });
       this.onStateChanged.fire();
+      this.notifyFileChanges(ctl, state);
       // 首次会话列表到达后自动恢复最近会话(桌面体感)
       if (!this.autoOpened && state.connection === 'connected' && state.sessions.length > 0 && !state.current.sessionId) {
         this.autoOpened = true;
@@ -146,6 +147,51 @@ export class ZcodeChatView implements vscode.WebviewViewProvider {
   /** 命令面板入口:停止当前 turn */
   stopRunning(): void {
     void this.ensureController().stop().catch(() => {});
+  }
+
+  private wasLiveActive = false;
+
+  /** turn 结束时,对 Write/Edit 落盘的文件弹通知(可一键看 diff) */
+  private notifyFileChanges(_ctl: SessionController, state: { current: { live: { active: boolean; toolCalls: { toolName: string; status: string; input?: unknown; result?: unknown }[] } } }): void {
+    const live = state.current.live;
+    if (this.wasLiveActive && !live.active) {
+      const paths = new Set<string>();
+      for (const tc of live.toolCalls) {
+        if (tc.status !== 'completed' || !['Write', 'Edit', 'MultiEdit', 'NotebookEdit'].includes(tc.toolName)) {
+          continue;
+        }
+        const p = extractFilePath(tc.input) ?? extractFilePath(tc.result);
+        if (p) {
+          paths.add(p);
+        }
+      }
+      if (paths.size > 0) {
+        const list = [...paths];
+        const show = `ZCode 修改了 ${list.length} 个文件:${list.map((f) => path.basename(f)).join(', ')}`;
+        void vscode.window.showInformationMessage(show, '查看改动').then((choice) => {
+          if (choice !== '查看改动') {
+            return;
+          }
+          void this.openDiffOrFile(list[0]);
+        });
+      }
+    }
+    this.wasLiveActive = live.active;
+  }
+
+  private async openDiffOrFile(file: string): Promise<void> {
+    const uri = vscode.Uri.file(file);
+    const gitExt = vscode.extensions.getExtension('vscode.git');
+    if (gitExt?.isActive) {
+      const ok = await vscode.commands.executeCommand('git.openChange', uri).then(
+        () => true,
+        () => false
+      );
+      if (ok) {
+        return;
+      }
+    }
+    await vscode.window.showTextDocument(uri, { preview: true }).then(undefined, () => {});
   }
 
   private post(m: ToWebview): void {
@@ -214,14 +260,24 @@ export class ZcodeChatView implements vscode.WebviewViewProvider {
 
   private async pickModel(ctl: SessionController): Promise<void> {
     const current = ctl.uiState.current.modelLabel;
-    const pick = await vscode.window.showQuickPick(
-      [
+    let models: { label: string; description: string; detail: string }[] = [];
+    try {
+      const catalog = await ctl.getWorkspaceModels();
+      models = catalog.map((m) => ({
+        label: m.label,
+        description: m.providerLabel,
+        detail: `${m.providerId}/${m.modelId}`,
+      }));
+    } catch {
+      /* readState 失败时回退常用清单 */
+    }
+    if (!models.length) {
+      models = [
         { label: 'GLM-5.3', description: 'BigModel Coding Plan', detail: 'builtin:bigmodel-coding-plan/GLM-5.3' },
         { label: 'GLM-5.2', description: 'BigModel Coding Plan', detail: 'builtin:bigmodel-coding-plan/GLM-5.2' },
-        { label: 'GLM-5-Turbo', description: 'BigModel Coding Plan(轻量/快速)', detail: 'builtin:bigmodel-coding-plan/GLM-5-Turbo' },
-      ],
-      { placeHolder: `当前:${current || '未设置'}` }
-    );
+      ];
+    }
+    const pick = await vscode.window.showQuickPick(models, { placeHolder: `当前:${current || '未设置'}` });
     if (!pick?.detail) {
       return;
     }
@@ -369,4 +425,18 @@ export function shortPath(f: string): string {
     return path.relative(ws, f);
   }
   return path.basename(f);
+}
+
+/** 从工具输入/结果中提取绝对文件路径 */
+function extractFilePath(v: unknown): string | null {
+  if (typeof v !== 'object' || v === null) {
+    return null;
+  }
+  for (const k of ['file_path', 'path', 'absolute_path', 'notebook_path']) {
+    const val = (v as Record<string, unknown>)[k];
+    if (typeof val === 'string' && val.startsWith('/')) {
+      return val;
+    }
+  }
+  return null;
 }
