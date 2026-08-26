@@ -35,8 +35,9 @@ export function activate(context: vscode.ExtensionContext): void {
       status.tooltip = 'ZCode: 任务运行中,点击查看';
       status.backgroundColor = undefined;
     } else {
-      status.text = '$(sparkle) ZCode';
-      status.tooltip = 'ZCode: 就绪,点击打开聊天';
+      const { used, window: win } = chat.contextUsage;
+      status.text = '$(sparkle) ZCode' + (win > 0 ? ` ${Math.round(used / 1000)}k` : '');
+      status.tooltip = `ZCode: 就绪${win > 0 ? ` · 上下文 ${Math.round(used / 1000)}k/${Math.round(win / 1000)}k` : ''},点击打开聊天`;
       status.backgroundColor = undefined;
     }
     status.show();

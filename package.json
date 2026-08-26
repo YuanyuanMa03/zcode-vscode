@@ -2,7 +2,7 @@
   "name": "zcode-vscode",
   "displayName": "ZCode for VSCode",
   "description": "ZCode AI 编程助手集成:在侧边栏与 ZCode CLI 对话,流式输出、会话续接、附件上下文。",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "publisher": "mayuanyuan",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -134,7 +134,20 @@
           "description": "发送消息时自动附加当前活跃编辑器文件(等价于每次 --attach)。"
         }
       }
-    }
+    },
+    "keybindings": [
+      {
+        "command": "zcode.openChat",
+        "key": "ctrl+alt+z",
+        "mac": "cmd+alt+z"
+      },
+      {
+        "command": "zcode.askAboutSelection",
+        "key": "ctrl+alt+a",
+        "mac": "cmd+alt+a",
+        "when": "editorHasSelection"
+      }
+    ]
   },
   "scripts": {
     "compile": "node esbuild.js",
