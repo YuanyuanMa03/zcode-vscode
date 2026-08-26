@@ -8,8 +8,10 @@ import { lineDiff } from './util/lineDiff';
 export type ToWebview =
   | { t: 'state'; state: UIState }
   | { t: 'prefill'; text: string }
-  | { t: 'attachChip'; label: string; clear?: boolean }
-  | { t: 'permDiff'; key: string; diff: string };
+  | { t: 'attachChip'; label: string; path?: string; clear?: boolean }
+  | { t: 'permDiff'; key: string; diff: string }
+  | { t: 'suggestFilesResult'; query: string; items: { label: string; detail: string }[] }
+  | { t: 'replaceInput'; text: string };
 
 export type FromWebview =
   | { t: 'ready' }
@@ -27,7 +29,13 @@ export type FromWebview =
   | { t: 'pickModel' }
   | { t: 'pickMode' }
   | { t: 'openFile'; path: string }
-  | { t: 'removeAttach' };
+  | { t: 'removeAttach' }
+  | { t: 'suggestFiles'; query: string }
+  | { t: 'enhance'; text: string }
+  | { t: 'compact' }
+  | { t: 'doctor' }
+  | { t: 'openSettings' }
+  | { t: 'retry' };
 
 /**
  * ZCode 聊天侧栏(v2,协议原生):webview 是纯渲染器,
@@ -40,7 +48,7 @@ export class ZcodeChatView implements vscode.WebviewViewProvider {
   private controller: SessionController | null = null;
   private unsubscribe?: () => void;
   private pendingPrefill?: string;
-  private attachChips: { label: string }[] = [];
+  private attachChips: { label: string; path?: string }[] = [];
   private autoOpened = false;
   private readonly onStateChanged = new vscode.EventEmitter<void>();
 
@@ -61,6 +69,31 @@ export class ZcodeChatView implements vscode.WebviewViewProvider {
 
   get currentSessionId(): string | null {
     return this.controller?.uiState.current.sessionId ?? null;
+  }
+
+  get contextUsage(): { used: number; window: number } {
+    const c = this.controller?.uiState.current;
+    return { used: c?.contextUsed ?? 0, window: c?.contextWindow ?? 0 };
+  }
+
+  private compactSuggestedFor = new Set<string>();
+
+  /** 上下文占用过高时一次性建议压缩 */
+  private maybeSuggestCompact(state: UIState): void {
+    const { contextUsed: used, contextWindow: win } = state.current;
+    const sid = state.current.sessionId;
+    if (!sid || win <= 0 || used / win < 0.85) {
+      return;
+    }
+    if (this.compactSuggestedFor.has(sid)) {
+      return;
+    }
+    this.compactSuggestedFor.add(sid);
+    void vscode.window.showWarningMessage('ZCode: 上下文占用已超过 85%,建议压缩会话', '立即压缩').then((c) => {
+      if (c === '立即压缩') {
+        void this.ensureController().compact().catch(() => {});
+      }
+    });
   }
 
   disposeController(): void {
@@ -93,6 +126,8 @@ export class ZcodeChatView implements vscode.WebviewViewProvider {
       this.post({ t: 'state', state });
       this.onStateChanged.fire();
       this.notifyFileChanges(state);
+      this.notifyTurnDoneInBackground(state);
+      this.maybeSuggestCompact(state);
       void this.pushPermissionDiffs(state);
       // 首次会话列表到达后自动恢复最近会话(桌面体感)
       if (!this.autoOpened && state.connection === 'connected' && state.sessions.length > 0 && !state.current.sessionId) {
@@ -131,10 +166,15 @@ export class ZcodeChatView implements vscode.WebviewViewProvider {
     }
   }
 
-  /** 附加当前文件/选区到输入框(chip 形态) */
-  addContextChip(label: string): void {
-    this.attachChips.push({ label });
-    this.post({ t: 'attachChip', label });
+  /** 附加当前文件/选区到输入框(chip 形态,path 用于发送时引用) */
+  addContextChip(label: string, path?: string): void {
+    this.attachChips.push({ label, path });
+    this.post({ t: 'attachChip', label, path });
+  }
+
+  /** @补全插入的文件 chip */
+  addFileChip(path: string): void {
+    this.addContextChip(path.split('/').pop() ?? path, path);
   }
 
   clearContextChips(): void {
@@ -156,6 +196,52 @@ export class ZcodeChatView implements vscode.WebviewViewProvider {
 
   private wasLiveActive = false;
   private readonly seenPermKeys = new Set<string>();
+  private lastSuggestSeq = 0;
+
+  /** 视图不可见时 turn 完成 → 弹通知拉回 */
+  private notifyTurnDoneInBackground(state: UIState): void {
+    const live = state.current.live;
+    if (this.wasLiveActive && !live.active && !this.view?.visible && !live.turnError) {
+      void vscode.window
+        .showInformationMessage(`ZCode:${state.current.title || '回复'} 已完成`, '查看')
+        .then((c) => {
+          if (c === '查看') {
+            this.show();
+          }
+        });
+    }
+    this.wasLiveActive = live.active;
+  }
+
+  /** @ 文件补全:工作区模糊匹配 */
+  private async suggestFiles(query: string): Promise<void> {
+    const seq = ++this.lastSuggestSeq;
+    const q = query.toLowerCase();
+    const excludes = ['**/node_modules/**', '**/.git/**', '**/dist/**', '**/out/**', '**/.venv/**'];
+    let items: { label: string; detail: string }[] = [];
+    try {
+      const uris = await vscode.workspace.findFiles('**/*', `{${excludes.join(',')}}`, 3000);
+      const rel = (u: vscode.Uri) => vscode.workspace.asRelativePath(u);
+      items = uris
+        .map((u) => ({ label: rel(u), full: u.fsPath }))
+        .filter((f) => {
+          if (!q) {
+            return true;
+          }
+          const l = f.label.toLowerCase();
+          const base = f.label.split('/').pop()?.toLowerCase() ?? l;
+          return base.includes(q) || l.includes(q);
+        })
+        .sort((a, b) => a.label.length - b.label.length)
+        .slice(0, 15)
+        .map((f) => ({ label: f.label, detail: f.full }));
+    } catch {
+      /* 空工作区等 */
+    }
+    if (seq === this.lastSuggestSeq) {
+      this.post({ t: 'suggestFilesResult', query, items });
+    }
+  }
 
   /** 新到的 Write/Edit 权限卡:生成改动预览并推送(批准前可见) */
   private async pushPermissionDiffs(state: UIState): Promise<void> {
@@ -316,6 +402,36 @@ export class ZcodeChatView implements vscode.WebviewViewProvider {
       case 'removeAttach':
         this.clearContextChips();
         break;
+      case 'suggestFiles':
+        void this.suggestFiles(m.query);
+        break;
+      case 'enhance': {
+        void vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: 'ZCode: 优化提示词…' }, () =>
+          ctl
+            .enhancePrompt(m.text)
+            .then((enhanced) => this.post({ t: 'replaceInput', text: enhanced }))
+            .catch((e) => vscode.window.showErrorMessage(`ZCode: 增强失败 ${e.message}`))
+        );
+        break;
+      }
+      case 'compact':
+        void ctl
+          .compact()
+          .then(() => vscode.window.showInformationMessage('ZCode: 会话已压缩'))
+          .catch((e) => vscode.window.showErrorMessage(`ZCode: 压缩失败 ${e.message}`));
+        break;
+      case 'doctor':
+        void vscode.commands.executeCommand('zcode.showDoctor');
+        break;
+      case 'openSettings':
+        void vscode.commands.executeCommand('zcode.openSettings');
+        break;
+      case 'retry':
+        this.disposeController();
+        this.autoOpened = false;
+        this.ensureController();
+        this.post({ t: 'state', state: this.ensureController().uiState as UIState });
+        break;
     }
   }
 
@@ -448,6 +564,16 @@ export class ZcodeChatView implements vscode.WebviewViewProvider {
   button:hover { background:var(--vscode-button-hoverBackground); }
   button.sec { background:var(--vscode-button-secondaryBackground,#666); color:var(--vscode-button-secondaryForeground,#fff); }
   button:disabled { opacity:.45; cursor:default; }
+  #popup { position:relative; background:var(--vscode-editorWidget-background,var(--vscode-input-background));
+    border:1px solid var(--vscode-input-border,#8886); border-radius:6px; margin-bottom:6px;
+    max-height:200px; overflow:auto; z-index:30; }
+  #popup .pitem { padding:5px 9px; cursor:pointer; font-size:12px; display:flex; gap:8px; }
+  #popup .pitem:hover, #popup .pitem.sel { background:var(--vscode-list-hoverBackground); }
+  #popup .plabel { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  #popup .pdetail { opacity:.6; margin-left:auto; white-space:nowrap; font-size:11px; }
+  .failpanel { border:1px solid var(--vscode-errorForeground); border-radius:8px; padding:12px;
+    margin:14px 0; line-height:1.8; }
+  .failpanel .fbtns { display:flex; gap:8px; margin-top:8px; }
   .empty { opacity:.65; text-align:center; margin-top:32px; line-height:1.8; }
   .empty .logo { font-size:34px; font-weight:700; letter-spacing:2px; color:var(--vscode-focusBorder); }
   select.sessionpick { background:var(--vscode-dropdown-background); color:var(--vscode-dropdown-foreground);
@@ -465,18 +591,25 @@ export class ZcodeChatView implements vscode.WebviewViewProvider {
     <div class="hrow" style="margin-top:5px">
       <select class="sessionpick" id="sessionpick" title="切换会话"></select>
       <span style="flex:1"></span>
+      <button class="sec" id="btn-compact" title="压缩会话上下文" style="padding:2px 8px;display:none">⇑ Compact</button>
       <button class="sec" id="btn-fork" title="从最近检查点分叉" style="padding:2px 8px">⑂</button>
       <button class="sec" id="btn-rewind" title="回退上一轮对话" style="padding:2px 8px">↺</button>
       <button class="sec" id="btn-new" title="新建会话" style="padding:2px 8px">＋</button>
     </div>
     <div class="conn" id="conn">连接中…</div>
   </header>
-  <div id="chat"><div class="empty"><div class="logo">Z</div>ZCode 就绪<br>输入问题开始对话</div></div>
+  <div id="chat">
+    <div id="history"></div>
+    <div id="livearea"></div>
+    <div id="interactions"></div>
+  </div>
   <footer>
     <div class="chips" id="chips"></div>
     <div class="statusrow"><span id="st-run"></span><span id="st-ctx"></span></div>
+    <div id="popup" style="display:none"></div>
     <div id="inputbox">
-      <textarea id="input" placeholder="问点什么…(Enter 发送,Shift+Enter 换行;运行中 Enter 追加指令)"></textarea>
+      <textarea id="input" placeholder="问点什么…(@ 引用文件,/ 斜杠命令;Enter 发送)"></textarea>
+      <button class="sec" id="btn-enhance" title="优化提示词(✨)" style="padding:6px 10px">✨</button>
       <button id="send">发送</button>
     </div>
   </footer>

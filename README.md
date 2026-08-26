@@ -2,7 +2,7 @@
 
 在 VSCode 侧边栏获得与 ZCode 桌面版几乎一致的 AI 编程体验:常驻协议进程、流式对话、工具调用卡片、权限审批、多会话管理、检查点回滚。
 
-[![Version](https://img.shields.io/badge/version-0.3.0-blue)](https://github.com/YuanyuanMa03/zcode-vscode) [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE) [![PR Pipeline](https://img.shields.io/badge/PRs-welcome-brightgreen)](https://github.com/YuanyuanMa03/zcode-vscode/pulls)
+[![Version](https://img.shields.io/badge/version-0.4.0-blue)](https://github.com/YuanyuanMa03/zcode-vscode) [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE) [![PR Pipeline](https://img.shields.io/badge/PRs-welcome-brightgreen)](https://github.com/YuanyuanMa03/zcode-vscode/pulls)
 
 ## v0.2 架构(协议原生)
 
@@ -17,6 +17,13 @@ VSCode 扩展宿主
         ↕
 ~/.zcode/server/node zcode.cjs app-server --stdio(与桌面版同一协议进程)
 ```
+
+## v0.4 新增
+
+- **Composer 2.0**:@ 引用工作区文件(模糊补全,转 chip)、/ 斜杠命令补全、✨ 提示词增强(prompt/enhance)
+- **上下文管理**:Compact 按钮(>60% 显示)+ >85% 主动建议;状态栏 token 数
+- **分层渲染**:历史/流式/交互三区独立渲染,长对话流式不再整页闪烁
+- **可靠性**:resume 后注入 runtimeModel 修复 provider 注册表污染(增强/压缩等 workspace 级调用恢复可用);后台完成通知;连接失败面板(诊断/设置/重试);键绑定 ⌘⌥Z / ⌘⌥A
 
 ## v0.3 新增
 
@@ -67,7 +74,7 @@ CLI 需要 model 配置(`~/.zcode/cli/config.json`):
 ## 安装与构建
 
 ```bash
-code --install-extension zcode-vscode-0.3.0.vsix
+code --install-extension zcode-vscode-0.4.0.vsix
 # 或从源码
 npm install && npm run package && npx vsce package --no-dependencies
 ```

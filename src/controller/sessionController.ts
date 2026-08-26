@@ -1,3 +1,7 @@
+import * as crypto from 'crypto';
+import * as fsSync from 'fs';
+import * as os from 'os';
+import * as pathMod from 'path';
 import { ProtocolTransport, type TransportExitInfo } from '../protocol/transport.ts';
 import { ProtocolClient, ProtocolRequestError } from '../protocol/client.ts';
 import { resolveBinariesPure } from '../protocol/binaries.ts';
@@ -70,6 +74,11 @@ export interface UISessionSummary {
   updatedAt: number;
 }
 
+export interface UISlashCommand {
+  name: string;
+  description?: string;
+}
+
 export interface UIState {
   connection: 'connecting' | 'connected' | 'failed';
   connectionError?: string;
@@ -83,6 +92,8 @@ export interface UIState {
     contextUsed: number;
     contextWindow: number;
     messages: UIMessage[];
+    /** 会话可用斜杠命令(宽松投影) */
+    slashCommands: UISlashCommand[];
     /** 运行中的 turn 叠加层 */
     live: {
       active: boolean;
@@ -177,6 +188,7 @@ export class SessionController {
       contextUsed: 0,
       contextWindow: 0,
       messages: [],
+      slashCommands: [],
       live: { active: false, streamingText: '', reasoningText: '', toolCalls: [] },
       pendingPermissions: [],
       pendingUserInputs: [],
@@ -301,17 +313,64 @@ export class SessionController {
     return this.client;
   }
 
+  private runtimeModelCache: Rec | null | undefined;
+
+  /**
+   * 从 ~/.zcode/cli/config.json 构建 runtimeModel(完整 provider 注册表注入)。
+   * 背景(实测):resume 之后 prompt/enhance 的 provider 解析会被会话内注册表污染而报
+   * "Model provider is not configured";create/resume 携带 runtimeModel 可让会话自洽。
+   */
+  private buildRuntimeModel(): Rec | null {
+    if (this.runtimeModelCache !== undefined) {
+      return this.runtimeModelCache;
+    }
+    try {
+      const cfgPath = pathMod.join(os.homedir(), '.zcode', 'cli', 'config.json');
+      const cfg = JSON.parse(fsSync.readFileSync(cfgPath, 'utf8')) as Rec;
+      const modelStr = typeof cfg.model === 'string' ? cfg.model : asStr(asRec(cfg.model).main);
+      const slash = modelStr.indexOf('/');
+      const providerId = modelStr.slice(0, slash);
+      const modelId = modelStr.slice(slash + 1);
+      const prov = asRec(asRec(cfg.provider)[providerId]);
+      const options = asRec(prov.options);
+      if (!providerId || !modelId || !prov.options) {
+        return (this.runtimeModelCache = null);
+      }
+      const payload = { providerId, modelId, baseURL: options.baseURL };
+      const revision = 'model-runtime:' + crypto.createHash('sha256').update(JSON.stringify(payload)).digest('hex').slice(0, 24);
+      this.runtimeModelCache = {
+        revision,
+        generatedAt: Date.now(),
+        model: { providerId, modelId },
+        provider: {
+          providerId,
+          kind: asStr(prov.kind, 'anthropic'),
+          ...(typeof prov.name === 'string' ? { label: prov.name } : {}),
+          source: 'workspace',
+          ...(typeof options.baseURL === 'string' ? { baseURL: options.baseURL } : {}),
+          ...(typeof options.apiKey === 'string' ? { apiKey: { source: 'inline', value: options.apiKey } } : {}),
+          models: [{ modelId, label: modelId }],
+        },
+      };
+    } catch {
+      this.runtimeModelCache = null;
+    }
+    return this.runtimeModelCache;
+  }
+
   private workspaceRef(): Rec {
     return { workspacePath: this.opts.workspacePath, workspaceKey: this.opts.workspacePath };
   }
 
   async newSession(mode?: string, model?: { providerId: string; modelId: string; variant?: string }): Promise<void> {
     const client = await this.ensureStarted();
+    const runtimeModel = this.buildRuntimeModel();
     const result = asRec(
       await client.request('session/create', {
         workspace: this.workspaceRef(),
         mode: mode ?? this.opts.defaultMode,
         ...(model ? { model } : {}),
+        ...(runtimeModel ? { runtimeModel } : {}),
         persistence: 'immediate',
       })
     );
@@ -347,6 +406,13 @@ export class SessionController {
     const result = asRec(await client.request('session/resume', { sessionId, workspace: this.workspaceRef() }));
     await this.adoptSnapshot(result);
     await this.subscribe(sessionId);
+    // 恢复旧会话后补注 provider 注册表(否则 prompt/enhance 会报 provider 未配置,实测)
+    const runtimeModel = this.buildRuntimeModel();
+    if (runtimeModel) {
+      await client
+        .request('session/updateRuntimeModelConfig', { sessionId, runtimeModel, applyModelSelection: true })
+        .catch(() => {});
+    }
     await this.refreshSessions();
   }
 
@@ -817,6 +883,7 @@ export class SessionController {
     cur.mode = asStr(asRec(asRec(snapshot.settings).mode).current) || asStr(session.mode, cur.mode);
     cur.status = asStr(session.status, 'idle');
     cur.messages = this.projectMessages(snapshot);
+    cur.slashCommands = this.projectSlashCommands(snapshot);
     const projection = asRec(snapshot.projection);
     cur.contextUsed = asNum(projection.contextUsed);
     cur.contextWindow = asNum(projection.contextWindow);
@@ -833,6 +900,47 @@ export class SessionController {
       await this.subscribe(sessionId);
     }
     this.pushNow();
+  }
+
+  private projectSlashCommands(snapshot: Rec): UISlashCommand[] {
+    const raw = snapshot.slashCommands;
+    if (!Array.isArray(raw)) {
+      return [];
+    }
+    return raw
+      .map((c) => {
+        if (typeof c === 'string') {
+          return { name: c };
+        }
+        const r = asRec(c);
+        const name = asStr(r.name) || asStr(r.command) || asStr(r.id);
+        return name ? { name, description: typeof r.description === 'string' ? r.description : undefined } : null;
+      })
+      .filter((c): c is UISlashCommand => c !== null);
+  }
+
+  /** 提示词增强(prompt/enhance,同步版;失败返回原文) */
+  async enhancePrompt(prompt: string): Promise<string> {
+    const client = await this.ensureStarted();
+    const r = asRec(
+      await client.request('prompt/enhance', { workspace: this.workspaceRef(), prompt, context: [] }, 60_000)
+    );
+    const enhanced = asStr(r.enhanced);
+    return enhanced.trim() ? enhanced : prompt;
+  }
+
+  /** 压缩会话上下文(session/compact) */
+  async compact(): Promise<void> {
+    const client = this.clientOrThrow();
+    const sid = this.state.current.sessionId;
+    if (!sid) {
+      return;
+    }
+    const r = asRec(await client.request('session/compact', { sessionId: sid }, 180_000));
+    const snap = asRec(r.snapshot);
+    if (snap.session) {
+      await this.adoptSnapshot(snap);
+    }
   }
 
   private projectMessages(snapshot: Rec): UIMessage[] {
