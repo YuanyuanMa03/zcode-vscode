@@ -1,12 +1,15 @@
+import * as fs from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { SessionController, type UIState } from './controller/sessionController';
+import { lineDiff } from './util/lineDiff';
 
 export type ToWebview =
   | { t: 'state'; state: UIState }
   | { t: 'prefill'; text: string }
-  | { t: 'attachChip'; label: string; clear?: boolean };
+  | { t: 'attachChip'; label: string; clear?: boolean }
+  | { t: 'permDiff'; key: string; diff: string };
 
 export type FromWebview =
   | { t: 'ready' }
@@ -89,6 +92,7 @@ export class ZcodeChatView implements vscode.WebviewViewProvider {
       this.post({ t: 'state', state });
       this.onStateChanged.fire();
       this.notifyFileChanges(state);
+      void this.pushPermissionDiffs(state);
       // 首次会话列表到达后自动恢复最近会话(桌面体感)
       if (!this.autoOpened && state.connection === 'connected' && state.sessions.length > 0 && !state.current.sessionId) {
         this.autoOpened = true;
@@ -150,6 +154,52 @@ export class ZcodeChatView implements vscode.WebviewViewProvider {
   }
 
   private wasLiveActive = false;
+  private readonly seenPermKeys = new Set<string>();
+
+  /** 新到的 Write/Edit 权限卡:生成改动预览并推送(批准前可见) */
+  private async pushPermissionDiffs(state: UIState): Promise<void> {
+    const jobs: Promise<void>[] = [];
+    for (const perm of state.current.pendingPermissions) {
+      if (this.seenPermKeys.has(perm.key)) {
+        continue;
+      }
+      this.seenPermKeys.add(perm.key);
+      if (!['Write', 'Edit', 'MultiEdit', 'NotebookEdit'].includes(perm.toolName)) {
+        continue;
+      }
+      jobs.push(
+        this.buildPermissionDiff(perm.toolName, perm.input)
+          .then((diff) => { if (diff !== null) { this.post({ t: 'permDiff', key: perm.key, diff }); } })
+          .catch(() => {})
+      );
+    }
+    if (jobs.length) {
+      await Promise.all(jobs);
+    }
+  }
+
+  private async buildPermissionDiff(toolName: string, input: unknown): Promise<string | null> {
+    const rec = (typeof input === 'object' && input !== null ? input : {}) as Record<string, unknown>;
+    const file = typeof rec.file_path === 'string' ? rec.file_path : typeof rec.path === 'string' ? rec.path : null;
+    if (!file) {
+      return null;
+    }
+    const head = `${toolName} · ${path.basename(file)}` + '\n';
+    if (toolName === 'Edit' && typeof rec.old_string === 'string' && typeof rec.new_string === 'string') {
+      return head + '\n' + lineDiff(rec.old_string, rec.new_string).join('\n');
+    }
+    if (typeof rec.content === 'string') {
+      let current = '';
+      try {
+        current = await fs.readFile(file, 'utf8');
+      } catch {
+        current = ''; // 新文件
+      }
+      const d = lineDiff(current, rec.content);
+      return head + '\n' + (d.length ? d.join('\n') : '(内容未变化)');
+    }
+    return null;
+  }
 
   /** turn 结束时,对 Write/Edit 落盘的文件弹通知(可一键看 diff) */
   private notifyFileChanges(state: { current: { live: { active: boolean; toolCalls: { toolName: string; status: string; input?: unknown; result?: unknown }[] } } }): void {
@@ -358,6 +408,11 @@ export class ZcodeChatView implements vscode.WebviewViewProvider {
   .perm .pinput { font-size:11px; background:var(--vscode-textCodeBlock-background); border-radius:4px;
     padding:4px 7px; margin-bottom:6px; max-height:140px; overflow:auto; white-space:pre-wrap; }
   .perm .popts { display:flex; flex-wrap:wrap; gap:6px; }
+  .permdiff summary { cursor:pointer; color:var(--vscode-textLink-foreground); margin:4px 0; }
+  .diffview { background:var(--vscode-textCodeBlock-background); border-radius:4px; padding:6px 8px;
+    max-height:260px; overflow:auto; font-size:11px; line-height:1.5; }
+  .dadd { color:var(--vscode-charts-green,#89d185); display:block; }
+  .ddel { color:var(--vscode-errorForeground,#f66); display:block; }
   .risk-low { border-left-color:var(--vscode-charts-green,#89d185); }
   .risk-medium { border-left-color:var(--vscode-charts-yellow,#cca700); }
   .risk-high { border-left-color:#e06b2d; }

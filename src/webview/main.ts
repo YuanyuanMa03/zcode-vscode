@@ -71,6 +71,8 @@ const sessionPick = $('sessionpick') as HTMLSelectElement;
 
 let running = false;
 let attachChips: string[] = [];
+const permDiffs = new Map<string, string>();
+const openDetails = new Set<string>();
 
 function escapeHtml(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
@@ -89,6 +91,9 @@ function fileName(p: string): string {
 /* ---------- 部件渲染 ---------- */
 
 function toolCardHTML(call: UIToolCall): string {
+  if (call.status === 'failed') {
+    openDetails.add(call.toolCallId + ':out');
+  }
   const statusText =
     call.status === 'running' ? `运行中 ${call.progress?.elapsedMs ? Math.round(call.progress.elapsedMs / 1000) + 's' : ''}` :
     call.status === 'scheduled' ? '排队中' :
@@ -106,8 +111,8 @@ function toolCardHTML(call: UIToolCall): string {
     <div class="trow"><span class="toolname">${escapeHtml(call.toolName)}</span>${badge}
       <span class="tstat ${call.status}">${statusText}</span></div>
     ${fileLink}
-    ${inputJson ? `<details><summary>输入</summary><pre>${escapeHtml(inputJson)}</pre></details>` : ''}
-    ${resultJson ? `<details${call.status === 'failed' ? ' open' : ''}><summary>${call.status === 'failed' ? '错误' : '结果'}</summary><pre>${escapeHtml(resultJson)}</pre></details>` : ''}
+    ${inputJson ? `<details data-dkey="${escapeHtml(call.toolCallId)}:in"><summary>输入</summary><pre>${escapeHtml(inputJson)}</pre></details>` : ''}
+    ${resultJson ? `<details data-dkey="${escapeHtml(call.toolCallId)}:out"><summary>${call.status === 'failed' ? '错误' : '结果'}</summary><pre>${escapeHtml(resultJson)}</pre></details>` : ''}
   </div>`;
 }
 function extractPath(v: unknown): string | null {
@@ -155,11 +160,19 @@ function permissionHTML(p: UIPermission): string {
     .map((o) => `<button data-perm="${escapeHtml(p.key)}" data-opt="${escapeHtml(o.optionId)}"
       title="${escapeHtml(o.description ?? '')}">${escapeHtml(o.name)}</button>`)
     .join('');
+  const diff = permDiffs.get(p.key);
+  const diffHtml = diff
+    ? `<details data-dkey="permdiff:${escapeHtml(p.key)}" class="permdiff"><summary>预览改动</summary><pre class="diffview">${diff
+        .split('\n')
+        .map((l) => (l.startsWith('+') ? `<span class="dadd">${escapeHtml(l)}</span>` : l.startsWith('-') ? `<span class="ddel">${escapeHtml(l)}</span>` : escapeHtml(l)))
+        .join('\n')}</pre></details>`
+    : '';
   return `<div class="perm risk-${p.riskLevel}">
     <span class="ptool">${escapeHtml(p.toolName)}</span>
     <span class="meta"> · 风险:${p.riskLevel}</span>
     <div class="preason">${escapeHtml(p.reason)}</div>
-    ${inputJson ? `<div class="pinput">${escapeHtml(inputJson)}</div>` : ''}
+    ${diffHtml}
+    ${inputJson ? `<details data-dkey="permin:${escapeHtml(p.key)}"><summary>原始输入</summary><div class="pinput">${escapeHtml(inputJson)}</div></details>` : ''}
     <div class="popts">${opts}<button class="sec" data-dismiss="${escapeHtml(p.key)}">忽略</button></div>
   </div>`;
 }
@@ -243,6 +256,11 @@ function render(state: UIState): void {
     parts.push(userInputHTML(u));
   }
   chatEl.innerHTML = parts.join('');
+  chatEl.querySelectorAll('details[data-dkey]').forEach((el) => {
+    if (openDetails.has((el as HTMLElement).dataset.dkey ?? '')) {
+      (el as HTMLDetailsElement).open = true;
+    }
+  });
   scrollBottom();
 }
 
@@ -279,6 +297,23 @@ function sendOrStop(): void {
   inputEl.value = '';
   vscode.postMessage({ t: 'send', content });
 }
+
+document.addEventListener(
+  'toggle',
+  (e) => {
+    const el = e.target as HTMLElement;
+    const key = el?.dataset?.dkey;
+    if (!key) {
+      return;
+    }
+    if ((el as HTMLDetailsElement).open) {
+      openDetails.add(key);
+    } else {
+      openDetails.delete(key);
+    }
+  },
+  true
+);
 
 sendBtn.addEventListener('click', sendOrStop);
 inputEl.addEventListener('keydown', (e) => {
@@ -328,7 +363,7 @@ sessionPick.addEventListener('change', () => {
 
 declare const window: Window & { __zcodeState?: UIState };
 window.addEventListener('message', (e: MessageEvent) => {
-  const m = e.data as { t: string; state?: UIState; text?: string; label?: string; clear?: boolean };
+  const m = e.data as { t: string; state?: UIState; text?: string; label?: string; clear?: boolean; key?: string; diff?: string };
   if (!m || typeof m !== 'object') {
     return;
   }
@@ -344,6 +379,14 @@ window.addEventListener('message', (e: MessageEvent) => {
         inputEl.value += m.text;
         inputEl.focus();
         inputEl.selectionStart = inputEl.selectionEnd = inputEl.value.length;
+      }
+      break;
+    case 'permDiff':
+      if (m.key !== undefined) {
+        permDiffs.set(m.key, m.diff ?? '');
+        if (window.__zcodeState) {
+          render(window.__zcodeState);
+        }
       }
       break;
     case 'attachChip':
