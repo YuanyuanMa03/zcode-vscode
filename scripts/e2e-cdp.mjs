@@ -300,21 +300,30 @@ async function main() {
     record('G_at_popup', items > 0 && chipAdded, `popup=${items}项, chip=${chipAdded}`);
   }
 
-  // ── 场景 H:提示词增强 ──
+  // ── 场景 H:提示词增强(先新建会话,避免脏状态)──
   {
+    await evalDoc(wv, `(d) => { d.getElementById('btn-new').click(); return true; }`);
+    await sleep(3000);
     await evalDoc(wv, `(d) => { const i = d.getElementById('input'); i.value = '写一个函数'; i.focus(); return true; }`);
     const orig = await evalDoc(wv, `(d) => d.getElementById('input').value`);
     await evalDoc(wv, `(d) => { d.getElementById('btn-enhance').click(); return true; }`);
     let changed = false;
     const t0 = Date.now();
-    while (Date.now() - t0 < 90000) {
+    while (Date.now() - t0 < 150000) {
       const v = await evalDoc(wv, `(d) => d.getElementById('input').value`);
       if (v && v !== orig) { changed = true; break; }
       await sleep(2000);
     }
     const final = await evalDoc(wv, `(d) => d.getElementById('input').value`);
     await evalDoc(wv, `(d) => { d.getElementById('input').value = ''; return true; }`);
-    record('H_enhance', changed, changed ? `'${orig}' → ${final.length}字` : '输入框未变化');
+    let toastNote = '';
+    if (!changed) {
+      try {
+        const tp = await page.send('Runtime.evaluate', { expression: `[...document.querySelectorAll('.notification-message')].map(n=>n.textContent).join('|').slice(0,150)`, returnByValue: true });
+        toastNote = '; toast=' + (tp.result.value || '(无)');
+      } catch {}
+    }
+    record('H_enhance', changed, changed ? `'${orig}' → ${final.length}字` : ('输入框未变化' + toastNote));
   }
 
   // ── 场景 R:真实编码任务(Edit + Bash 多权限多工具)──
@@ -340,6 +349,53 @@ async function main() {
       contentOk = /datetime|time|now/i.test(c);
     } catch {}
     record('R_real_task', permCount >= 1 && lastCards >= 2 && contentOk, `perms=${permCount}, tools=${lastCards}, 代码已改=${contentOk}`);
+  }
+
+  // ── 场景 S:跨端同步(第二进程模拟桌面端更新当前会话,插件应自动出现新消息)──
+  {
+    const sid = await evalDoc(wv, `(d) => (d.defaultView.__zcodeState && d.defaultView.__zcodeState.current.sessionId) || null`);
+    if (!sid) {
+      record('S_cross_surface_sync', false, '拿不到当前 sessionId');
+    } else {
+      const { spawn } = await import('node:child_process');
+      const ctlPath = '/Volumes/Sam-APFS/zcode-vscode/src/controller/sessionController.ts';
+      const child = spawn('node', ['--input-type=module', '-e', `
+        import { SessionController } from '${ctlPath}';
+        const ctl = new SessionController({ workspacePath: '/tmp/zc-ext-test/ws', defaultMode: 'build' });
+        let base = -1;
+        let done = false;
+        ctl.onStateChange((st) => {
+          const n = st.current.messages.filter((m) => m.role === 'assistant').length;
+          if (base < 0 && !st.current.live.active && n > 0) base = n;
+          if (base > 0 && n > base && !st.current.live.active) done = true;
+        });
+        try {
+          await ctl.openSession(${JSON.stringify(sid)});
+          await ctl.send('Reply with exactly: desktop-sync-proven');
+          const t0 = Date.now();
+          while (!done && Date.now() - t0 < 150000) await new Promise((r) => setTimeout(r, 1000));
+          ctl.dispose();
+          process.exit(0);
+        } catch (e) {
+          console.error(e.message);
+          ctl.dispose();
+          process.exit(1);
+        }
+      `], { stdio: ['ignore', 'ignore', 'inherit'], cwd: '/Volumes/Sam-APFS/zcode-vscode' });
+      let synced = false;
+      const t0 = Date.now();
+      while (Date.now() - t0 < 45000) {
+        const text = await evalDoc(wv, `(d) => {
+          const st = d.defaultView.__zcodeState;
+          if (!st) return '';
+          return st.current.messages.map(m => m.parts.map(p => p.text || '').join('')).join(' ');
+        }`);
+        if (/desktop-sync-proven/.test(text)) { synced = true; break; }
+        await sleep(3000);
+      }
+      child.kill('SIGKILL');
+      record('S_cross_surface_sync', synced, synced ? '第二进程的消息已自动出现' : '45s 内未同步');
+    }
   }
 
   console.log('--- SUMMARY:', JSON.stringify(results));

@@ -109,6 +109,11 @@ export class ZcodeChatView implements vscode.WebviewViewProvider {
     view.webview.onDidReceiveMessage((m: FromWebview) => this.onMessage(m));
     view.webview.html = this.html(view.webview);
     this.ensureController();
+    view.onDidChangeVisibility(() => {
+      if (view.visible) {
+        void this.ensureController().pollOnce();
+      }
+    });
   }
 
   private ensureController(): SessionController {
@@ -136,6 +141,7 @@ export class ZcodeChatView implements vscode.WebviewViewProvider {
       }
     });
     this.controller = ctl;
+    ctl.startSyncPolling(15_000);
     void (async () => {
       try {
         await ctl.ensureStarted();
@@ -407,8 +413,7 @@ export class ZcodeChatView implements vscode.WebviewViewProvider {
         break;
       case 'enhance': {
         void vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: 'ZCode: 优化提示词…' }, () =>
-          ctl
-            .enhancePrompt(m.text)
+          Promise.resolve(ctl.enhancePrompt(m.text))
             .then((enhanced) => this.post({ t: 'replaceInput', text: enhanced }))
             .catch((e) => vscode.window.showErrorMessage(`ZCode: 增强失败 ${e.message}`))
         );

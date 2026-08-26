@@ -166,6 +166,9 @@ export class SessionController {
 
   private lastSeq = 0;
   private stateRevision = 0;
+  /** 跨端同步轮询(CC 式共享存储 + 轮询):桌面端产生的新会话/新消息及时出现 */
+  private syncTimer: NodeJS.Timeout | null = null;
+  private lastSeenUpdatedAt = 0;
   private subscribedSessionId: string | null = null;
   private latestCheckpointId: string | null = null;
   private permSeq = 0;
@@ -285,9 +288,49 @@ export class SessionController {
 
   dispose(): void {
     this.disposed = true;
+    if (this.syncTimer) {
+      clearInterval(this.syncTimer);
+      this.syncTimer = null;
+    }
     this.client?.dispose();
     this.client = null;
     this.transport = null;
+  }
+
+  /** 启动跨端同步轮询(默认 15s;幂等) */
+  startSyncPolling(intervalMs = 15_000): void {
+    if (this.syncTimer) {
+      return;
+    }
+    this.syncTimer = setInterval(() => void this.pollOnce(), intervalMs);
+  }
+
+  /** 立即同步一次:刷新列表;若打开的会话在别处(桌面端)有更新则拉取新消息 */
+  async pollOnce(): Promise<void> {
+    const client = this.client;
+    if (!client || this.disposed) {
+      return;
+    }
+    try {
+      await this.refreshSessions();
+      const sid = this.state.current.sessionId;
+      if (!sid || this.state.current.live.active) {
+        return;
+      }
+      const meta = this.state.sessions.find((x) => x.sessionId === sid);
+      if (meta && meta.updatedAt > this.lastSeenUpdatedAt) {
+        const grew = this.lastSeenUpdatedAt > 0;
+        this.lastSeenUpdatedAt = meta.updatedAt;
+        if (grew) {
+          await client
+            .request('session/read', { sessionId: sid, deliveryKind: DELIVERY_KIND })
+            .then((snap) => this.adoptSnapshot(asRec(snap)))
+            .catch(() => {});
+        }
+      }
+    } catch {
+      /* 断连/竞态:下一轮再试 */
+    }
   }
 
   /* ---------- 公共 API ---------- */
@@ -880,6 +923,10 @@ export class SessionController {
     const cur = this.state.current;
     cur.sessionId = sessionId;
     cur.title = asStr(session.title);
+    const seenUpdatedAt = asNum(session.updatedAt);
+    if (seenUpdatedAt > this.lastSeenUpdatedAt) {
+      this.lastSeenUpdatedAt = seenUpdatedAt;
+    }
     cur.mode = asStr(asRec(asRec(snapshot.settings).mode).current) || asStr(session.mode, cur.mode);
     cur.status = asStr(session.status, 'idle');
     cur.messages = this.projectMessages(snapshot);

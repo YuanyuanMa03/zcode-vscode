@@ -2,7 +2,7 @@
 
 在 VSCode 侧边栏获得与 ZCode 桌面版几乎一致的 AI 编程体验:常驻协议进程、流式对话、工具调用卡片、权限审批、多会话管理、检查点回滚。
 
-[![Version](https://img.shields.io/badge/version-0.4.0-blue)](https://github.com/YuanyuanMa03/zcode-vscode) [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE) [![PR Pipeline](https://img.shields.io/badge/PRs-welcome-brightgreen)](https://github.com/YuanyuanMa03/zcode-vscode/pulls)
+[![Version](https://img.shields.io/badge/version-0.4.1-blue)](https://github.com/YuanyuanMa03/zcode-vscode) [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE) [![PR Pipeline](https://img.shields.io/badge/PRs-welcome-brightgreen)](https://github.com/YuanyuanMa03/zcode-vscode/pulls)
 
 ## v0.2 架构(协议原生)
 
@@ -17,6 +17,11 @@ VSCode 扩展宿主
         ↕
 ~/.zcode/server/node zcode.cjs app-server --stdio(与桌面版同一协议进程)
 ```
+
+## v0.4.1 新增
+
+- **跨端会话同步(桌面 App ↔ 插件)**:共享同一会话存储 + 15s 轮询(列表/新消息自动出现,模仿 Claude Code 共享文件模式);协议层跨进程互通已证(独立探针 `scripts/cross-process-sync-probe.ts`)
+- resume 后自动重推 runtimeModel(连接级 provider 状态,与桌面行为一致),否则他端续聊报"模型已不可用"
 
 ## v0.4 新增
 
@@ -74,7 +79,7 @@ CLI 需要 model 配置(`~/.zcode/cli/config.json`):
 ## 安装与构建
 
 ```bash
-code --install-extension zcode-vscode-0.4.0.vsix
+code --install-extension zcode-vscode-0.4.1.vsix
 # 或从源码
 npm install && npm run package && npx vsce package --no-dependencies
 ```
