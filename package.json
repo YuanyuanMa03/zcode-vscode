@@ -2,7 +2,7 @@
   "name": "zcode-vscode",
   "displayName": "ZCode for VSCode",
   "description": "ZCode AI 编程助手集成:在侧边栏与 ZCode CLI 对话,流式输出、会话续接、附件上下文。",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "publisher": "mayuanyuan",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -140,6 +140,7 @@
     "compile": "node esbuild.js",
     "watch": "node esbuild.js --watch",
     "typecheck": "tsc --noEmit",
+    "test": "node --test",
     "package": "tsc --noEmit && node esbuild.js --production",
     "vsix": "vsce package --no-dependencies"
   },

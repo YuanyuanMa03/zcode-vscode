@@ -3,22 +3,28 @@ import { ZcodeChatView, shortPath } from './chatView';
 import { resolveBinaries, ZcodeRunner } from './zcodeRunner';
 
 export function activate(context: vscode.ExtensionContext): void {
-  const chat = new ZcodeChatView(context);
-  context.subscriptions.push(
-    vscode.window.registerWebviewViewProvider(ZcodeChatView.viewId, chat, {
-      webviewOptions: { retainContextWhenHidden: true },
-    })
-  );
-
-  const runner = new ZcodeRunner();
   const out = vscode.window.createOutputChannel('ZCode');
   context.subscriptions.push(out);
 
-  // 状态栏:就绪/运行中/未配置
+  const chat = new ZcodeChatView(context, (line) => out.appendLine(line));
+  context.subscriptions.push(
+    vscode.window.registerWebviewViewProvider(ZcodeChatView.viewId, chat, {
+      webviewOptions: { retainContextWhenHidden: true },
+    }),
+    { dispose: () => chat.disposeController() }
+  );
+
+  const runner = new ZcodeRunner();
+
+  // 状态栏:未配置/运行中/就绪
   const status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 90);
   status.command = 'zcode.openChat';
   status.name = 'ZCode';
-  context.subscriptions.push(status, chat.stateChanged(refreshStatus), vscode.workspace.onDidChangeConfiguration((e) => e.affectsConfiguration('zcode') && refreshStatus()));
+  context.subscriptions.push(
+    status,
+    chat.stateChanged(refreshStatus),
+    vscode.workspace.onDidChangeConfiguration((e) => e.affectsConfiguration('zcode') && refreshStatus())
+  );
   function refreshStatus(): void {
     if (!resolveBinaries().cli) {
       status.text = '$(warning) ZCode';
@@ -42,18 +48,20 @@ export function activate(context: vscode.ExtensionContext): void {
 
   register('zcode.openChat', (prefill?: string) => chat.show(prefill));
   register('zcode.newConversation', () => chat.newConversation());
-  register('zcode.stop', () => chat.stop());
+  register('zcode.stop', () => chat.stopRunning());
   register('zcode.openSettings', () => vscode.commands.executeCommand('workbench.action.openSettings', '@ext:mayuanyuan.zcode-vscode'));
+
   register('zcode.attachActiveFile', () => {
-    const f = vscode.window.activeTextEditor?.document.uri.fsPath;
+    const ed = vscode.window.activeTextEditor;
+    const f = ed?.document.uri.fsPath;
     if (!f) {
       vscode.window.showWarningMessage('ZCode: 没有活跃的编辑器文件。');
       return;
     }
-    const cur = chat.getAttachedFile();
-    chat.setAttachedFile(cur === f ? null : f);
-    vscode.window.showInformationMessage(cur === f ? `ZCode: 已移除附件 ${shortPath(f)}` : `ZCode: 已附加 ${shortPath(f)}(发送后生效)`);
+    chat.show();
+    chat.addContextChip(shortPath(f));
   });
+
   register('zcode.askAboutSelection', () => {
     const ed = vscode.window.activeTextEditor;
     if (!ed) {
@@ -68,6 +76,7 @@ export function activate(context: vscode.ExtensionContext): void {
     const rel = vscode.workspace.asRelativePath(ed.document.uri);
     chat.show(`关于 ${rel} 中的这段代码:\n\n\`\`\`\n${text}\n\`\`\`\n\n`);
   });
+
   register('zcode.showDoctor', async () => {
     out.show(true);
     out.appendLine('=== zcode doctor ===');
@@ -78,5 +87,5 @@ export function activate(context: vscode.ExtensionContext): void {
 }
 
 export function deactivate(): void {
-  /* runner 由各视图自行清理;运行中的子进程随扩展宿主退出 */
+  /* 控制器在 activate 注入的 dispose 中清理 */
 }
