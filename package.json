@@ -2,7 +2,7 @@
   "name": "zcode-vscode",
   "displayName": "ZCode for VSCode",
   "description": "ZCode AI 编程助手集成:在侧边栏与 ZCode CLI 对话,流式输出、会话续接、附件上下文。",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "publisher": "mayuanyuan",
   "license": "MIT",
   "icon": "media/icon.png",
