@@ -135,8 +135,12 @@ export class ProtocolClient {
     if (target === null) {
       return
     }
-    // 响应帧必须携带 result 键(§1.4 服务器按键存在性分类),undefined 归一为 null
-    this.transport.send({ id: target, result: result === undefined ? null : result })
+    try {
+      // 响应帧必须携带 result 键(§1.4 服务器按键存在性分类),undefined 归一为 null
+      this.transport.send({ id: target, result: result === undefined ? null : result })
+    } catch {
+      /* transport 已关闭:应答无处可去,静默 */
+    }
   }
 
   /** 以错误应答服务器请求(路由/幂等规则同 respond) */
@@ -145,7 +149,11 @@ export class ProtocolClient {
     if (target === null) {
       return
     }
-    this.transport.send({ id: target, error })
+    try {
+      this.transport.send({ id: target, error })
+    } catch {
+      /* transport 已关闭:应答无处可去,静默 */
+    }
   }
 
   /** 通知回调(session/event | state.updated | prompt/enhance/result 等) */

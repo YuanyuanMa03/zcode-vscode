@@ -370,7 +370,15 @@ export class SessionController {
     this.state.current.messages.push({ id: `local-${Date.now()}`, role: 'user', parts: [{ kind: 'text', text: content }] });
     this.beginLive();
     this.pushNow();
-    await client.request('session/send', { sessionId: sid, content });
+    try {
+      await client.request('session/send', { sessionId: sid, content });
+    } catch (err) {
+      // 请求本身失败(如超时/断连):结束 live 层避免 UI 永久"运行中"
+      this.state.current.live.turnError = err instanceof Error ? err.message : String(err);
+      this.endLive();
+      this.pushNow();
+      throw err;
+    }
   }
 
   /** 运行中追加指令 */
@@ -386,9 +394,11 @@ export class SessionController {
       if (err instanceof ProtocolRequestError && err.code === -32602) {
         // steer schema 不明(文档风险 #7):退化为排队,turn 结束后再发
         const wait = setInterval(() => {
-          if (!this.state.current.live.active) {
+          if (this.disposed || !this.state.current.live.active) {
             clearInterval(wait);
-            void this.send(content).catch(() => {});
+            if (!this.disposed) {
+              void this.send(content).catch(() => {});
+            }
           }
         }, 500);
         return;

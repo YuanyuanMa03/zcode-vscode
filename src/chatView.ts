@@ -88,7 +88,7 @@ export class ZcodeChatView implements vscode.WebviewViewProvider {
     this.unsubscribe = ctl.onStateChange((state) => {
       this.post({ t: 'state', state });
       this.onStateChanged.fire();
-      this.notifyFileChanges(ctl, state);
+      this.notifyFileChanges(state);
       // 首次会话列表到达后自动恢复最近会话(桌面体感)
       if (!this.autoOpened && state.connection === 'connected' && state.sessions.length > 0 && !state.current.sessionId) {
         this.autoOpened = true;
@@ -152,7 +152,7 @@ export class ZcodeChatView implements vscode.WebviewViewProvider {
   private wasLiveActive = false;
 
   /** turn 结束时,对 Write/Edit 落盘的文件弹通知(可一键看 diff) */
-  private notifyFileChanges(_ctl: SessionController, state: { current: { live: { active: boolean; toolCalls: { toolName: string; status: string; input?: unknown; result?: unknown }[] } } }): void {
+  private notifyFileChanges(state: { current: { live: { active: boolean; toolCalls: { toolName: string; status: string; input?: unknown; result?: unknown }[] } } }): void {
     const live = state.current.live;
     if (this.wasLiveActive && !live.active) {
       const paths = new Set<string>();
