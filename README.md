@@ -2,7 +2,7 @@
 
 在 VSCode 侧边栏获得与 ZCode 桌面版几乎一致的 AI 编程体验:常驻协议进程、流式对话、工具调用卡片、权限审批、多会话管理、检查点回滚。
 
-![Version](https://img.shields.io/badge/version-0.2.0-blue) ![License](https://img.shields.io/badge/license-MIT-green)
+[![Version](https://img.shields.io/badge/version-0.3.0-blue)](https://github.com/YuanyuanMa03/zcode-vscode) [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE) [![PR Pipeline](https://img.shields.io/badge/PRs-welcome-brightgreen)](https://github.com/YuanyuanMa03/zcode-vscode/pulls)
 
 ## v0.2 架构(协议原生)
 
@@ -17,6 +17,13 @@ VSCode 扩展宿主
         ↕
 ~/.zcode/server/node zcode.cjs app-server --stdio(与桌面版同一协议进程)
 ```
+
+## v0.3 新增
+
+- **权限卡 diff 预览**:Write/Edit 批准前直接看到改动(Edit: old→new;Write: 与当前文件逐行 diff,+/- 行配色)
+- **消息级回退**:每条用户消息旁 ↺ 回退到该消息之前;顶栏 ↺ 撤销上一轮
+- **fork 兜底**:纯文本轮无 checkpoint 时自动按最后消息分叉
+- **模式/模型徽标实时刷新**(修复 settings 解析)
 
 ## 功能
 
@@ -60,7 +67,7 @@ CLI 需要 model 配置(`~/.zcode/cli/config.json`):
 ## 安装与构建
 
 ```bash
-code --install-extension zcode-vscode-0.2.0.vsix
+code --install-extension zcode-vscode-0.3.0.vsix
 # 或从源码
 npm install && npm run package && npx vsce package --no-dependencies
 ```
@@ -80,7 +87,7 @@ npm install && npm run package && npx vsce package --no-dependencies
 npm run typecheck          # tsc --noEmit
 node --test src/protocol/client.test.ts   # 协议层单测
 node scripts/protocol-smoke.ts [ws] [prompt] [mode]  # 真实 CLI 集成冒烟
-node scripts/e2e-cdp.mjs   # 隔离 VSCode 实例 CDP 端到端(含权限流)
+node scripts/e2e-cdp.mjs   # 隔离实例 CDP 端到端(7 场景:权限+diff/停止/steer/rewind/fork/模式切换)
 ```
 
 代码结构见 `docs/spec-v0.2.md` 与 `docs/tickets-v0.2.md`。
