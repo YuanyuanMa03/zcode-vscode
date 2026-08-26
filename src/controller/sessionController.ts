@@ -440,12 +440,44 @@ export class SessionController {
     if (!sid) {
       return null;
     }
-    const r = asRec(await client.request('session/fork', { sessionId: sid }));
+    if (this.state.current.live.active) {
+      throw new Error('提示运行中无法分叉,请先等待或停止');
+    }
+    let r: Rec;
+    try {
+      r = asRec(await client.request('session/fork', { sessionId: sid }));
+    } catch (err) {
+      // 无可用 checkpoint(纯文本轮 / 已回退)→ 用最后一条消息作分叉点
+      const msg = err instanceof Error ? err.message : String(err);
+      const last = this.state.current.messages[this.state.current.messages.length - 1];
+      if (!last || !/checkpoint/i.test(msg)) {
+        throw err;
+      }
+      r = asRec(await client.request('session/fork', { sessionId: sid, target: { kind: 'message', messageId: last.id } }));
+    }
     const forked = asStr(r.forkedSessionId);
     if (forked) {
       await this.openSession(forked);
     }
     return forked || null;
+  }
+
+  /** 回退到某条消息(对话维度);UI 从消息列表选目标 */
+  async rewindToMessage(messageId: string): Promise<void> {
+    const client = this.clientOrThrow();
+    const sid = this.state.current.sessionId;
+    if (!sid) {
+      return;
+    }
+    const r = asRec(
+      await client.request('session/rewind', {
+        sessionId: sid,
+        target: { kind: 'message', messageId },
+        scope: 'conversation',
+      })
+    );
+    await this.adoptSnapshot(asRec(r.snapshot));
+    await this.refreshSessions();
   }
 
   async rewindToLatestCheckpoint(): Promise<void> {
@@ -782,14 +814,15 @@ export class SessionController {
     const cur = this.state.current;
     cur.sessionId = sessionId;
     cur.title = asStr(session.title);
-    cur.mode = asStr(session.mode, cur.mode);
+    cur.mode = asStr(asRec(asRec(snapshot.settings).mode).current) || asStr(session.mode, cur.mode);
     cur.status = asStr(session.status, 'idle');
     cur.messages = this.projectMessages(snapshot);
     const projection = asRec(snapshot.projection);
     cur.contextUsed = asNum(projection.contextUsed);
     cur.contextWindow = asNum(projection.contextWindow);
     const settings = asRec(snapshot.settings);
-    cur.modelLabel = modelLabel(settings.model ?? settings.modelRef) || cur.modelLabel;
+    // settings.model = {available:[], current:{providerId,modelId}};session.mode 为创建时静态值
+    cur.modelLabel = modelLabel(asRec(settings.model).current) || modelLabel(settings.modelRef) || cur.modelLabel;
     const runtime = asRec(snapshot.runtime);
     this.stateRevision = asNum(runtime.stateRevision, this.stateRevision);
     const eventSeq = asNum(runtime.eventSeq);
