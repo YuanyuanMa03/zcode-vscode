@@ -20,6 +20,7 @@ export type FromWebview =
   | { t: 'openSession'; sessionId: string }
   | { t: 'fork' }
   | { t: 'rewind' }
+  | { t: 'rewindTo'; messageId: string }
   | { t: 'answerPermission'; key: string; optionId: string }
   | { t: 'dismissPermission'; key: string }
   | { t: 'answerUserInput'; key: string; action: 'accept' | 'decline'; value?: string }
@@ -279,7 +280,17 @@ export class ZcodeChatView implements vscode.WebviewViewProvider {
         void ctl.fork().catch((e) => vscode.window.showErrorMessage(`ZCode: ${e.message}`));
         break;
       case 'rewind':
-        void ctl.rewindToLatestCheckpoint().catch((e) => vscode.window.showErrorMessage(`ZCode: ${e.message}`));
+        // 顶栏按钮 = 回退到最近一轮用户消息之前(撤销上一轮)
+        {
+          const msgs = ctl.uiState.current.messages;
+          const lastUser = [...msgs].reverse().find((m) => m.role === 'user' && !m.id.startsWith('local-'));
+          if (lastUser) {
+            void ctl.rewindToMessage(lastUser.id).catch((e) => vscode.window.showErrorMessage(`ZCode: ${e.message}`));
+          }
+        }
+        break;
+      case 'rewindTo':
+        void ctl.rewindToMessage(m.messageId).catch((e) => vscode.window.showErrorMessage(`ZCode: ${e.message}`));
         break;
       case 'answerPermission':
         ctl.answerPermission(m.key, m.optionId);
@@ -372,7 +383,9 @@ export class ZcodeChatView implements vscode.WebviewViewProvider {
   .conn.err { color:var(--vscode-errorForeground); opacity:1; }
   #chat { flex:1; overflow-y:auto; padding:8px 0 12px; }
   .msg { margin:10px 0; line-height:1.55; word-break:break-word; }
-  .msg .who { font-size:11px; opacity:.7; margin-bottom:2px; }
+.msg .who { font-size:11px; opacity:.7; margin-bottom:2px; }
+  .rewindbtn { background:none; border:none; color:inherit; opacity:.5; cursor:pointer; padding:0 4px; font-size:11px; }
+  .rewindbtn:hover { opacity:1; color:var(--vscode-focusBorder); }
   .msg.user .bubble { background:var(--vscode-input-background); border:1px solid var(--vscode-input-border,transparent);
     border-radius:8px; padding:8px 10px; white-space:pre-wrap; }
   .msg .bubble p { margin:.4em 0; }
@@ -453,7 +466,7 @@ export class ZcodeChatView implements vscode.WebviewViewProvider {
       <select class="sessionpick" id="sessionpick" title="切换会话"></select>
       <span style="flex:1"></span>
       <button class="sec" id="btn-fork" title="从最近检查点分叉" style="padding:2px 8px">⑂</button>
-      <button class="sec" id="btn-rewind" title="回滚到最近检查点(仅对话)" style="padding:2px 8px">↺</button>
+      <button class="sec" id="btn-rewind" title="回退上一轮对话" style="padding:2px 8px">↺</button>
       <button class="sec" id="btn-new" title="新建会话" style="padding:2px 8px">＋</button>
     </div>
     <div class="conn" id="conn">连接中…</div>

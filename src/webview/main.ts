@@ -148,8 +148,12 @@ function partHTML(p: UIPart): string {
 function messageHTML(m: UIMessage): string {
   const who = m.role === 'user' ? '你' : 'ZCode';
   const body = m.parts.map(partHTML).join('');
+  const rewindBtn =
+    m.role === 'user' && !m.id.startsWith('local-')
+      ? `<button class="rewindbtn" data-rewind="${escapeHtml(m.id)}" title="回退到这条消息之前">↺</button>`
+      : '';
   return `<div class="msg ${m.role === 'user' ? 'user' : 'assistant'}">
-    <div class="who">${who}</div>
+    <div class="who">${who}${rewindBtn}</div>
     <div class="bubble">${body || '<span class="meta">(空)</span>'}</div>
   </div>`;
 }
@@ -325,6 +329,11 @@ inputEl.addEventListener('keydown', (e) => {
 
 document.addEventListener('click', (e) => {
   const t = e.target as HTMLElement;
+  const rewind = t.dataset.rewind;
+  if (rewind !== undefined && rewind) {
+    vscode.postMessage({ t: 'rewindTo', messageId: rewind });
+    return;
+  }
   const perm = t.dataset.perm;
   if (perm !== undefined && t.dataset.opt) {
     vscode.postMessage({ t: 'answerPermission', key: perm, optionId: t.dataset.opt });
