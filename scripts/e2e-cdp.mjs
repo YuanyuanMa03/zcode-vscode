@@ -281,6 +281,67 @@ async function main() {
     }
   }
 
+  // ── 场景 G:@ 文件补全 ──
+  {
+    await evalDoc(wv, `(d) => { const i = d.getElementById('input'); i.focus(); i.value = '看看 @demo'; i.selectionStart = i.selectionEnd = i.value.length; i.dispatchEvent(new Event('input', { bubbles: true })); return true; }`);
+    let items = 0;
+    for (let i = 0; i < 15; i++) {
+      items = await evalDoc(wv, `(d) => d.querySelectorAll('#popup .pitem[data-pidx]').length`);
+      if (items > 0) break;
+      await sleep(600);
+    }
+    let chipAdded = false;
+    if (items > 0) {
+      await evalDoc(wv, `(d) => { d.querySelector('#popup .pitem').click(); return true; }`);
+      await sleep(600);
+      chipAdded = await evalDoc(wv, `(d) => d.querySelectorAll('#chips .chip').length > 0`);
+      await evalDoc(wv, `(d) => { d.getElementById('input').value = ''; d.getElementById('chips').innerHTML = ''; return true; }`);
+    }
+    record('G_at_popup', items > 0 && chipAdded, `popup=${items}项, chip=${chipAdded}`);
+  }
+
+  // ── 场景 H:提示词增强 ──
+  {
+    await evalDoc(wv, `(d) => { const i = d.getElementById('input'); i.value = '写一个函数'; i.focus(); return true; }`);
+    const orig = await evalDoc(wv, `(d) => d.getElementById('input').value`);
+    await evalDoc(wv, `(d) => { d.getElementById('btn-enhance').click(); return true; }`);
+    let changed = false;
+    const t0 = Date.now();
+    while (Date.now() - t0 < 90000) {
+      const v = await evalDoc(wv, `(d) => d.getElementById('input').value`);
+      if (v && v !== orig) { changed = true; break; }
+      await sleep(2000);
+    }
+    const final = await evalDoc(wv, `(d) => d.getElementById('input').value`);
+    await evalDoc(wv, `(d) => { d.getElementById('input').value = ''; return true; }`);
+    record('H_enhance', changed, changed ? `'${orig}' → ${final.length}字` : '输入框未变化');
+  }
+
+  // ── 场景 R:真实编码任务(Edit + Bash 多权限多工具)──
+  {
+    const fs2 = await import('node:fs/promises');
+    await fs2.writeFile('/tmp/zc-ext-test/ws/demo.py', 'print("hello")\n');
+    await evalDoc(wv, `(d) => { d.getElementById('btn-new').click(); return true; }`);
+    await sleep(2500);
+    await evalDoc(wv, `(d) => { d.getElementById('input').value = '修改 demo.py:把打印内容改成打印当前时间(用 datetime),然后运行 python3 demo.py 把输出告诉我'; d.getElementById('send').click(); return true; }`);
+    let permCount = 0;
+    const t0 = Date.now();
+    let lastCards = 0;
+    while (Date.now() - t0 < 240000) {
+      const st = await snap();
+      if (st.perms > 0) { await autoApprove(true); permCount++; }
+      lastCards = st.toolcards;
+      if (st.btn === '发送' && st.toolcards >= 2 && st.msgs >= 2) break;
+      await sleep(2500);
+    }
+    let contentOk = false;
+    try {
+      const c = await fs2.readFile('/tmp/zc-ext-test/ws/demo.py', 'utf8');
+      contentOk = /datetime|time|now/i.test(c);
+    } catch {}
+    record('R_real_task', permCount >= 1 && lastCards >= 2 && contentOk, `perms=${permCount}, tools=${lastCards}, 代码已改=${contentOk}`);
+  }
+
   console.log('--- SUMMARY:', JSON.stringify(results));
   const fails = Object.values(results).filter((v) => v === 'FAIL').length;
   console.log(fails === 0 ? 'E2E_V3_PASS' : `E2E_V3_FAIL(${fails})`);
