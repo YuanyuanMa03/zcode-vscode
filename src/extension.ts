@@ -60,7 +60,7 @@ export function activate(context: vscode.ExtensionContext): void {
       return;
     }
     chat.show();
-    chat.addContextChip(shortPath(f));
+    chat.addContextChip(shortPath(f), f);
   });
 
   register('zcode.askAboutSelection', () => {

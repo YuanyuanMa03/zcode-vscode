@@ -1,4 +1,6 @@
-import { marked } from 'marked';
+import { escapeHtml, renderMarkdown } from './markdown.ts';
+import { liveViewAction } from './liveView.ts';
+import { composePrompt } from './compose.ts';
 
 /* ---------- 宿主推送的状态类型(与 sessionController 对应) ---------- */
 
@@ -55,7 +57,6 @@ declare const acquireVsCodeApi: () => { postMessage(m: unknown): void };
 declare const window: Window & { __zcodeState?: UIState };
 
 const vscode = acquireVsCodeApi();
-marked.setOptions({ gfm: true, breaks: true });
 
 const $ = (id: string) => document.getElementById(id) as HTMLElement;
 const chatEl = $('chat');
@@ -84,16 +85,7 @@ const openDetails = new Set<string>();
 
 /* ---------- 工具函数 ---------- */
 
-function escapeHtml(s: string): string {
-  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-}
-function md(s: string): string {
-  try {
-    return marked.parse(escapeHtml(s)) as string;
-  } catch {
-    return `<p>${escapeHtml(s)}</p>`;
-  }
-}
+const md = renderMarkdown;
 function fileName(p: string): string {
   return p.split('/').pop() ?? p;
 }
@@ -122,9 +114,15 @@ function toolCardHTML(call: UIToolCall): string {
     call.status === 'failed' ? '失败' :
     call.duration !== undefined ? `完成 ${(call.duration / 1000).toFixed(1)}s` : '完成';
   const badge = call.subagent ? ' <span class="meta">subagent</span>' : '';
-  const inputJson = call.input ? JSON.stringify(call.input, null, 1) : '';
-  const resultJson = call.result !== undefined ? JSON.stringify(call.result, null, 1).slice(0, 4000) :
-    call.error !== undefined ? JSON.stringify(call.error, null, 1).slice(0, 4000) : '';
+  const previewJson = (v: unknown): string => {
+    if (v === undefined || v === null) {
+      return '';
+    }
+    const s = JSON.stringify(v, null, 1) ?? '';
+    return s.length > 4000 ? s.slice(0, 4000) + '\n⋯(截断)' : s;
+  };
+  const inputJson = previewJson(call.input);
+  const resultJson = call.result !== undefined ? previewJson(call.result) : previewJson(call.error);
   const filePath = extractPath(call.input) ?? extractPath(call.result);
   const fileLink = filePath
     ? `<div><span class="pfile" data-file="${escapeHtml(filePath)}">📄 ${escapeHtml(fileName(filePath))} — 打开</span></div>`
@@ -229,7 +227,7 @@ function failedPanelHTML(state: UIState): string {
 
 let historyFp = '';
 let interFp = '';
-let lastLiveActive = false;
+let sessionPickFp = '';
 
 function renderHistory(state: UIState): void {
   const msgs = state.current.messages;
@@ -249,18 +247,16 @@ function renderHistory(state: UIState): void {
 
 function renderLive(state: UIState): void {
   const live = state.current.live;
-  if (!live.active && !lastLiveActive) {
+  const action = liveViewAction(live);
+  if (action === 'clear') {
     if (liveEl.innerHTML !== '') {
       liveEl.innerHTML = '';
     }
     return;
   }
-  lastLiveActive = live.active;
-  if (!live.active) {
-    // turn 结束:live 区清空(权威内容将由快照进入 history)
-    liveEl.innerHTML = live.turnError
-      ? `<div class="perm risk-critical"><span class="ptool">出错</span><div class="preason">${escapeHtml(live.turnError)}</div></div>`
-      : '';
+  if (action === 'error') {
+    // turn 失败:错误面板驻留到下一轮开始/会话切换(turnError 由 controller 清除)
+    liveEl.innerHTML = `<div class="perm risk-critical"><span class="ptool">出错</span><div class="preason">${escapeHtml(live.turnError ?? '')}</div></div>`;
     return;
   }
   let body = '';
@@ -333,7 +329,9 @@ function render(state: UIState): void {
   sendBtn.className = running ? 'sec' : '';
 
   const cur = state.current.sessionId;
-  if (document.activeElement !== sessionPick) {
+  const pickFp = `${cur}|${state.sessions.map((s) => s.sessionId + '\t' + s.title + '\t' + s.updatedAt).join('|')}`;
+  if (document.activeElement !== sessionPick && pickFp !== sessionPickFp) {
+    sessionPickFp = pickFp;
     sessionPick.innerHTML = '<option value="">— 会话列表 —</option>' +
       state.sessions.map((s) => `<option value="${escapeHtml(s.sessionId)}"${s.sessionId === cur ? ' selected' : ''}>${escapeHtml(s.title.slice(0, 28))} · ${s.mode}</option>`).join('');
   }
@@ -369,11 +367,7 @@ function sendOrStop(): void {
   if (!text) {
     return;
   }
-  let content = text;
-  const files = attachChips.filter((c) => c.path);
-  if (files.length) {
-    content = `参考以下文件:\n${files.map((c) => `- ${c.path}`).join('\n')}\n\n${text}`;
-  }
+  const content = composePrompt(text, attachChips);
   inputEl.value = '';
   closePopup();
   vscode.postMessage({ t: 'send', content });
@@ -381,6 +375,10 @@ function sendOrStop(): void {
 
 sendBtn.addEventListener('click', sendOrStop);
 inputEl.addEventListener('keydown', (e) => {
+  // IME 组合输入中(选字/确认候选词)不拦截 Enter,否则中文输入法选字即发送
+  if (e.isComposing || e.keyCode === 229) {
+    return;
+  }
   if (popupOpen && ['ArrowDown', 'ArrowUp', 'Enter', 'Escape', 'Tab'].includes(e.key)) {
     e.preventDefault();
     popupKey(e.key);

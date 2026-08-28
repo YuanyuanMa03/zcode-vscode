@@ -128,11 +128,6 @@
             "全自动:所有工具自动放行(CLI headless 默认)"
           ],
           "markdownDescription": "权限模式,对应 CLI `--mode`。headless 默认 yolo(全自动),请谨慎选择。"
-        },
-        "zcode.autoAttachActiveFile": {
-          "type": "boolean",
-          "default": false,
-          "description": "发送消息时自动附加当前活跃编辑器文件(等价于每次 --attach)。"
         }
       }
     },
