@@ -385,7 +385,11 @@ export class ZcodeChatView implements vscode.WebviewViewProvider {
         void ctl.rewindToMessage(m.messageId).catch((e) => vscode.window.showErrorMessage(`ZCode: ${e.message}`));
         break;
       case 'answerPermission':
-        ctl.answerPermission(m.key, m.optionId);
+        try {
+          ctl.answerPermission(m.key, m.optionId);
+        } catch (e) {
+          vscode.window.showErrorMessage(`ZCode: ${e instanceof Error ? e.message : String(e)}`);
+        }
         break;
       case 'dismissPermission':
         ctl.dismissPermission(m.key);

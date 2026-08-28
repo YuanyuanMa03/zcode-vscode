@@ -5,6 +5,7 @@ import * as pathMod from 'path';
 import { ProtocolTransport, type TransportExitInfo } from '../protocol/transport.ts';
 import { ProtocolClient, ProtocolRequestError } from '../protocol/client.ts';
 import { resolveBinariesPure } from '../protocol/binaries.ts';
+import type { FrameId } from '../protocol/types.ts';
 
 /* ---------- UI 状态模型(可结构化克隆,webview 纯渲染) ---------- */
 
@@ -48,6 +49,7 @@ export interface UIUserInputQuestion {
 
 export interface UIUserInput {
   key: string;
+  requestId: string;
   prompt?: string;
   questions: UIUserInputQuestion[];
   interaction?: string;
@@ -153,22 +155,23 @@ export interface SessionControllerOptions {
   cliPath?: string;
   /** 日志行(stderr)回调 */
   onLogLine?: (line: string) => void;
+  /** 测试注入口:替换默认的 transport+client 装配(生产为 spawn 真实 CLI 进程) */
+  createConnection?: () => { transport: ProtocolTransport; client: ProtocolClient };
 }
 
 const DELIVERY_KIND = 'desktop-continuous';
 
 export class SessionController {
   private readonly opts: SessionControllerOptions;
-  private transport: ProtocolTransport | null = null;
   private client: ProtocolClient | null = null;
   private restartAttempts = 0;
   private disposed = false;
 
-  private lastSeq = 0;
+  private lastSeqBySession = new Map<string, number>();
   private stateRevision = 0;
   /** 跨端同步轮询(CC 式共享存储 + 轮询):桌面端产生的新会话/新消息及时出现 */
   private syncTimer: NodeJS.Timeout | null = null;
-  private lastSeenUpdatedAt = 0;
+  private lastSeenUpdatedAtBySession = new Map<string, number>();
   private subscribedSessionId: string | null = null;
   private latestCheckpointId: string | null = null;
   private permSeq = 0;
@@ -176,6 +179,9 @@ export class SessionController {
   /** key → resolver(UI 应答权限/用户输入) */
   private readonly permissionResolvers = new Map<string, (v: unknown) => void>();
   private readonly userInputResolvers = new Map<string, (v: unknown) => void>();
+  /** key → 服务器请求帧 id(resolved-elsewhere 时调用 abandonServerRequest 防泄漏) */
+  private readonly permissionFrameIds = new Map<string, FrameId>();
+  private readonly userInputFrameIds = new Map<string, FrameId>();
 
   private readonly listeners = new Set<(state: UIState) => void>();
   private pushTimer: NodeJS.Timeout | null = null;
@@ -216,6 +222,11 @@ export class SessionController {
     this.state.connectionError = undefined;
     this.pushNow();
 
+    if (this.opts.createConnection) {
+      const { transport, client } = this.opts.createConnection();
+      return this.wireConnection(transport, client);
+    }
+
     const bins = resolveBinariesPure({ nodePath: this.opts.nodePath, cliPath: this.opts.cliPath });
     if (!bins.cli) {
       this.state.connection = 'failed';
@@ -223,26 +234,29 @@ export class SessionController {
       this.pushNow();
       throw new Error(this.state.connectionError);
     }
-    const transport: ProtocolTransport = new ProtocolTransport({
+    const transport = new ProtocolTransport({
       command: bins.node,
       args: [bins.cli, 'app-server', '--stdio'],
       cwd: this.opts.workspacePath,
       env: process.env,
     });
     const client = new ProtocolClient(transport);
+    return this.wireConnection(transport, client);
+  }
+
+  /** 装配帧/退出回调与服务器请求 handler(真实 spawn 与测试注入共用) */
+  private wireConnection(transport: ProtocolTransport, client: ProtocolClient): ProtocolClient {
     transport.setOnFrame((f) => client.handleFrame(f));
     transport.setOnStderrLine((l) => this.opts.onLogLine?.(l));
     transport.setOnExit((info) => this.handleTransportExit(info));
     transport.start();
-    this.transport = transport;
-    void this.transport;
     this.client = client;
     client.setOnNotification((method, params) => this.handleNotification(method, params));
     client.registerServerRequestHandler('interaction/requestPermission', (frame) =>
-      this.handlePermissionRequest(asRec(frame.params))
+      this.handlePermissionRequest(asRec(frame.params), frame.id)
     );
     client.registerServerRequestHandler('interaction/requestUserInput', (frame) =>
-      this.handleUserInputRequest(asRec(frame.params))
+      this.handleUserInputRequest(asRec(frame.params), frame.id)
     );
     client.registerServerRequestHandler('interaction/requestProviderRuntimeHeaders', () => ({
       headersApplied: false,
@@ -253,17 +267,20 @@ export class SessionController {
   }
 
   private handleTransportExit(info: TransportExitInfo): void {
+    const oldClient = this.client;
     this.client = null;
-    this.transport = null;
+    // 立即结算在途请求(否则各自等满 60s 超时才失败,期间 UI 无反馈)
+    oldClient?.dispose();
     if (this.disposed) {
       return;
     }
-    // 结算所有挂起 UI 交互
-    for (const p of this.state.current.pendingPermissions) {
-      this.permissionResolvers.get(p.key)?.({ decision: 'deny', reason: 'connection lost' });
+    // 连接已断,订阅随之失效;重启恢复后由 adoptSnapshot 重新订阅
+    this.subscribedSessionId = null;
+    this.settlePendingInteractions('连接中断');
+    if (this.state.current.live.active) {
+      this.state.current.live.turnError = '协议进程退出,本轮已中断';
+      this.endLive();
     }
-    this.permissionResolvers.clear();
-    this.state.current.pendingPermissions = [];
     if (this.restartAttempts >= 3) {
       this.state.connection = 'failed';
       this.state.connectionError = `协议进程退出(code=${info.code} signal=${info.signal}),已达重启上限`;
@@ -280,10 +297,28 @@ export class SessionController {
         if (this.subscribedSessionId) {
           await this.openSession(this.subscribedSessionId);
         }
+        // 自愈成功:预算清零(否则一天内 3 次瞬时崩溃后,第 4 次直接永久 failed)
+        this.restartAttempts = 0;
       } catch {
         /* 状态已在 ensureStarted 内标记 */
       }
     })();
+  }
+
+  /** 结算所有挂起的权限/用户输入(连接中断或会话切换):一律 deny/decline,避免 Promise 悬挂与跨会话错答 */
+  private settlePendingInteractions(reason: string): void {
+    for (const p of this.state.current.pendingPermissions) {
+      this.permissionResolvers.get(p.key)?.({ decision: 'deny', reason });
+    }
+    this.permissionResolvers.clear();
+    this.permissionFrameIds.clear();
+    for (const u of this.state.current.pendingUserInputs) {
+      this.userInputResolvers.get(u.key)?.({ action: 'decline' });
+    }
+    this.userInputResolvers.clear();
+    this.userInputFrameIds.clear();
+    this.state.current.pendingPermissions = [];
+    this.state.current.pendingUserInputs = [];
   }
 
   dispose(): void {
@@ -294,7 +329,6 @@ export class SessionController {
     }
     this.client?.dispose();
     this.client = null;
-    this.transport = null;
   }
 
   /** 启动跨端同步轮询(默认 15s;幂等) */
@@ -318,9 +352,10 @@ export class SessionController {
         return;
       }
       const meta = this.state.sessions.find((x) => x.sessionId === sid);
-      if (meta && meta.updatedAt > this.lastSeenUpdatedAt) {
-        const grew = this.lastSeenUpdatedAt > 0;
-        this.lastSeenUpdatedAt = meta.updatedAt;
+      const seen = this.lastSeenUpdatedAtBySession.get(sid) ?? 0;
+      if (meta && meta.updatedAt > seen) {
+        const grew = seen > 0;
+        this.lastSeenUpdatedAtBySession.set(sid, meta.updatedAt);
         if (grew) {
           await client
             .request('session/read', { sessionId: sid, deliveryKind: DELIVERY_KIND })
@@ -447,8 +482,8 @@ export class SessionController {
   async openSession(sessionId: string): Promise<void> {
     const client = await this.ensureStarted();
     const result = asRec(await client.request('session/resume', { sessionId, workspace: this.workspaceRef() }));
+    // adoptSnapshot 内部在会话变化时完成 subscribe(且带该会话自己的 afterSeq 水位)
     await this.adoptSnapshot(result);
-    await this.subscribe(sessionId);
     // 恢复旧会话后补注 provider 注册表(否则 prompt/enhance 会报 provider 未配置,实测)
     const runtimeModel = this.buildRuntimeModel();
     if (runtimeModel) {
@@ -461,10 +496,11 @@ export class SessionController {
 
   private async subscribe(sessionId: string): Promise<void> {
     const client = this.clientOrThrow();
+    const afterSeq = this.lastSeqBySession.get(sessionId) ?? 0;
     await client.request('session/subscribe', {
       sessionId,
       deliveryKind: DELIVERY_KIND,
-      ...(this.lastSeq > 0 ? { afterSeq: this.lastSeq } : {}),
+      ...(afterSeq > 0 ? { afterSeq } : {}),
     });
     this.subscribedSessionId = sessionId;
   }
@@ -641,10 +677,15 @@ export class SessionController {
     if (!perm) {
       return false;
     }
-    const opt = perm.options.find((o) => o.optionId === optionId) ?? perm.options[0];
+    const opt = perm.options.find((o) => o.optionId === optionId);
+    if (!opt) {
+      // 过期/错误 optionId 不得静默回退到 options[0](通常是"允许")——那是权限旁路
+      throw new Error(`权限选项无效或已过期:${optionId}`);
+    }
     this.removePermission(key);
     this.permissionResolvers.get(key)?.(opt.response);
     this.permissionResolvers.delete(key);
+    this.permissionFrameIds.delete(key);
     this.pushNow();
     return true;
   }
@@ -654,6 +695,7 @@ export class SessionController {
     this.removePermission(key);
     this.permissionResolvers.get(key)?.({ decision: 'deny', reason: 'dismissed' });
     this.permissionResolvers.delete(key);
+    this.permissionFrameIds.delete(key);
     this.pushNow();
     void perm;
   }
@@ -666,6 +708,7 @@ export class SessionController {
     this.state.current.pendingUserInputs = this.state.current.pendingUserInputs.filter((u) => u.key !== key);
     this.userInputResolvers.get(key)?.(action === 'accept' ? { action: 'accept', content: content ?? {} } : { action: 'decline' });
     this.userInputResolvers.delete(key);
+    this.userInputFrameIds.delete(key);
     this.pushNow();
     return true;
   }
@@ -676,7 +719,7 @@ export class SessionController {
 
   /* ---------- 服务器交互请求 ---------- */
 
-  private handlePermissionRequest(params: Rec): Promise<unknown> {
+  private handlePermissionRequest(params: Rec, frameId: FrameId): Promise<unknown> {
     const key = `perm:${++this.permSeq}:${asStr(params.requestId)}`;
     const options = Array.isArray(params.options) ? params.options : [];
     const perm: UIPermission = {
@@ -702,10 +745,11 @@ export class SessionController {
     };
     this.state.current.pendingPermissions.push(perm);
     this.pushNow();
+    this.permissionFrameIds.set(key, frameId);
     return new Promise<unknown>((resolve) => this.permissionResolvers.set(key, resolve));
   }
 
-  private handleUserInputRequest(params: Rec): Promise<unknown> {
+  private handleUserInputRequest(params: Rec, frameId: FrameId): Promise<unknown> {
     const key = `ui:${++this.permSeq}:${asStr(params.requestId)}`;
     const schema = asRec(params.schema);
     const questions = Array.isArray(params.questions)
@@ -730,12 +774,14 @@ export class SessionController {
       : [];
     const input: UIUserInput = {
       key,
+      requestId: asStr(params.requestId),
       prompt: typeof params.prompt === 'string' ? params.prompt : undefined,
       questions,
       interaction: asStr(schema.interaction) || undefined,
     };
     this.state.current.pendingUserInputs.push(input);
     this.pushNow();
+    this.userInputFrameIds.set(key, frameId);
     return new Promise<unknown>((resolve) => this.userInputResolvers.set(key, resolve));
   }
 
@@ -782,11 +828,14 @@ export class SessionController {
       payload,
       sessionId: asStr(params.sessionId) || undefined,
     };
-    if (env.seq > this.lastSeq) {
-      this.lastSeq = env.seq;
-    }
     if (env.sessionId && env.sessionId !== this.state.current.sessionId) {
       return; // 其他会话事件(如 fork 出的子会话)忽略
+    }
+    // seq 是每会话的事件序号(types.ts §3.1 session/subscribe):水位必须按会话维度推进,
+    // 否则切会话时会把 A 会话的 seq 当作 B 的 afterSeq(事件丢失/订阅失败)
+    const sid = this.state.current.sessionId;
+    if (sid && env.seq > (this.lastSeqBySession.get(sid) ?? 0)) {
+      this.lastSeqBySession.set(sid, env.seq);
     }
     switch (env.type) {
       case 'turn.started':
@@ -814,16 +863,16 @@ export class SessionController {
         const perm = this.state.current.pendingPermissions.find((p) => p.requestId === reqId);
         if (perm) {
           this.removePermission(perm.key);
-          this.permissionResolvers.delete(perm.key);
+          this.abandonInteraction(perm.key, this.permissionFrameIds, this.permissionResolvers);
         }
         break;
       }
       case 'userInput.resolved': {
         const reqId = asStr(env.payload.requestId);
-        const ui = this.state.current.pendingUserInputs.find((u) => u.key.endsWith(reqId));
+        const ui = this.state.current.pendingUserInputs.find((u) => u.requestId === reqId);
         if (ui) {
           this.state.current.pendingUserInputs = this.state.current.pendingUserInputs.filter((u) => u !== ui);
-          this.userInputResolvers.delete(ui.key);
+          this.abandonInteraction(ui.key, this.userInputFrameIds, this.userInputResolvers);
         }
         break;
       }
@@ -864,6 +913,22 @@ export class SessionController {
   private endLive(): void {
     this.state.current.live.active = false;
     this.state.current.status = 'idle';
+  }
+
+  /** 服务器已在别处结算该交互:先标记其服务器请求"已应答"(后续 respond 不再发帧),
+   *  再结算本地 handler Promise——只删不调会让 client 内的 Promise 永久悬挂(泄漏) */
+  private abandonInteraction(
+    key: string,
+    frameIds: Map<string, FrameId>,
+    resolvers: Map<string, (v: unknown) => void>
+  ): void {
+    const fid = frameIds.get(key);
+    if (fid !== undefined) {
+      this.client?.abandonServerRequest(fid);
+      frameIds.delete(key);
+    }
+    resolvers.get(key)?.({ decision: 'deny', reason: 'resolved elsewhere' });
+    resolvers.delete(key);
   }
 
   private applyToolUpdate(payload: Rec): void {
@@ -921,11 +986,21 @@ export class SessionController {
       return;
     }
     const cur = this.state.current;
+    const sessionChanged = cur.sessionId !== null && cur.sessionId !== sessionId;
+    if (sessionChanged) {
+      // 旧会话的事件流不再属于当前视图(其 turn.completed 会被 sessionId 过滤丢弃):
+      // 结算挂起交互、复位 live 层,否则 UI 永久卡"运行中"、跨端同步轮询被冻结
+      this.settlePendingInteractions('会话已切换');
+      if (cur.live.active) {
+        cur.live.turnError = undefined;
+        this.endLive();
+      }
+    }
     cur.sessionId = sessionId;
     cur.title = asStr(session.title);
     const seenUpdatedAt = asNum(session.updatedAt);
-    if (seenUpdatedAt > this.lastSeenUpdatedAt) {
-      this.lastSeenUpdatedAt = seenUpdatedAt;
+    if (seenUpdatedAt > 0 && seenUpdatedAt > (this.lastSeenUpdatedAtBySession.get(sessionId) ?? 0)) {
+      this.lastSeenUpdatedAtBySession.set(sessionId, seenUpdatedAt);
     }
     cur.mode = asStr(asRec(asRec(snapshot.settings).mode).current) || asStr(session.mode, cur.mode);
     cur.status = asStr(session.status, 'idle');
@@ -940,8 +1015,8 @@ export class SessionController {
     const runtime = asRec(snapshot.runtime);
     this.stateRevision = asNum(runtime.stateRevision, this.stateRevision);
     const eventSeq = asNum(runtime.eventSeq);
-    if (eventSeq > this.lastSeq) {
-      this.lastSeq = eventSeq;
+    if (eventSeq > 0 && eventSeq > (this.lastSeqBySession.get(sessionId) ?? 0)) {
+      this.lastSeqBySession.set(sessionId, eventSeq);
     }
     if (this.subscribedSessionId !== sessionId) {
       await this.subscribe(sessionId);
