@@ -7,7 +7,8 @@
   "license": "MIT",
   "icon": "media/icon.png",
   "engines": {
-    "vscode": "^1.85.0"
+    "vscode": "^1.85.0",
+    "node": ">=20"
   },
   "categories": [
     "AI",
@@ -153,12 +154,11 @@
     "compile": "node esbuild.js",
     "watch": "node esbuild.js --watch",
     "typecheck": "tsc --noEmit",
-    "test": "node --test",
+    "test": "tsc -p tsconfig.test.json && node --test $(find build-test -name '*.test.js')",
     "package": "tsc --noEmit && node esbuild.js --production",
     "vsix": "vsce package --no-dependencies"
   },
   "devDependencies": {
-    "@types/marked": "^6.0.0",
     "@types/node": "^20.14.0",
     "@types/vscode": "^1.85.0",
     "esbuild": "^0.24.0",
