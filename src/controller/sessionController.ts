@@ -274,7 +274,9 @@ export class SessionController {
     if (this.disposed) {
       return;
     }
-    // 连接已断,订阅随之失效;重启恢复后由 adoptSnapshot 重新订阅
+    // 连接已断,订阅随之失效;重启恢复后由 adoptSnapshot 重新订阅。
+    // 待恢复会话必须先从 state 捕获(下面会清空订阅标记,IIFE 再读它就恒空了)
+    const sidToReopen = this.state.current.sessionId;
     this.subscribedSessionId = null;
     this.settlePendingInteractions('连接中断');
     if (this.state.current.live.active) {
@@ -294,8 +296,8 @@ export class SessionController {
     void (async () => {
       try {
         await this.ensureStarted();
-        if (this.subscribedSessionId) {
-          await this.openSession(this.subscribedSessionId);
+        if (sidToReopen) {
+          await this.openSession(sidToReopen);
         }
         // 自愈成功:预算清零(否则一天内 3 次瞬时崩溃后,第 4 次直接永久 failed)
         this.restartAttempts = 0;

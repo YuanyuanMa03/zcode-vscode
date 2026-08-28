@@ -4,12 +4,13 @@ export function escapeHtml(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
-/** 链接 scheme 白名单(http/https/mailto + 相对路径);模型输出是不可信内容 */
+/** 链接 scheme 白名单(http/https/mailto + 相对路径);模型输出是不可信内容。
+ *  先剥离控制字符:浏览器 URL 解析在识别 scheme 前会删 TAB/LF/CR,java\tscript: 可借此穿透 */
 function isSafeHref(href: string): boolean {
   if (!href) {
     return false;
   }
-  const m = href.match(/^\s*([a-zA-Z][a-zA-Z0-9+.-]*):/);
+  const m = href.replace(/[\x00-\x1f\x7f]/g, '').match(/^\s*([a-zA-Z][a-zA-Z0-9+.-]*):/);
   if (!m) {
     return true; // 相对路径 / 锚点
   }
@@ -21,7 +22,7 @@ function isSafeImageHref(href: string): boolean {
   if (!href) {
     return false;
   }
-  const m = href.match(/^\s*([a-zA-Z][a-zA-Z0-9+.-]*):/);
+  const m = href.replace(/[\x00-\x1f\x7f]/g, '').match(/^\s*([a-zA-Z][a-zA-Z0-9+.-]*):/);
   if (!m) {
     return true;
   }

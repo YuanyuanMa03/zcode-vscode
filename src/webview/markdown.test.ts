@@ -45,3 +45,10 @@ test('markdown: 解析异常时回退为纯文本段落', () => {
   const html = renderMarkdown('x'.repeat(1000))
   assert.ok(typeof html === 'string' && html.length > 0)
 })
+
+test('markdown: scheme 内嵌控制字符(java\\tscript:)不得绕过白名单', () => {
+  // 浏览器 URL 解析会先删除 TAB 再识别 scheme;marked 的 <...> 链接目标允许 TAB 透传
+  const html = renderMarkdown('[x](<java\tscript:alert(1)>)')
+  assert.ok(!/\shref="[^"]*script:/i.test(html), html)
+  assert.ok(!/\shref="[^"]*script/i.test(html), html)
+})

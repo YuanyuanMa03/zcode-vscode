@@ -123,6 +123,12 @@ test('协议进程中途退出:live 层复位、挂起交互结算、重启自�
     await flush()
     assert.equal(ctl.uiState.connection, 'connected', `第 ${i + 1} 次崩溃后应自愈`)
   }
+  await flush()
+
+  // 自愈必须重新打开会话并重订阅:否则事件流死亡,下一条消息永久卡"运行中"
+  const lastConn = conn()
+  assert.equal(sentRequests(lastConn, 'session/resume').length, 1, '自愈后应重发 session/resume')
+  assert.equal(sentRequests(lastConn, 'session/subscribe').length, 1, '自愈后应重订阅')
 
   // 崩溃瞬间:live 层复位(修复前永久卡 true,轮询冻结、Enter 退化为 steer)
   assert.equal(ctl.uiState.current.live.active, false)
