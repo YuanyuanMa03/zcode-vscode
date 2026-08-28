@@ -221,3 +221,57 @@ test('dispose:pending 全部 reject,级联 transport,后续请求拒绝', async 
   assert.equal(transport.disposed, true)
   await assert.rejects(client.request('after/dispose'), /disposed/)
 })
+
+test('畸形错误帧(error:null / 字符串):pending 以 ProtocolRequestError 结算,不抛异常', async () => {
+  const { client } = setup()
+  const p1 = client.request('a/null-error')
+  const p2 = client.request('b/string-error')
+  client.handleFrame({ id: 1, error: null })
+  client.handleFrame({ id: 2, error: 'boom-string' })
+  await assert.rejects(p1, (err: unknown) => err instanceof ProtocolRequestError)
+  await assert.rejects(p2, (err: unknown) => err instanceof ProtocolRequestError && /boom-string/.test(err.message))
+  client.dispose()
+})
+
+test('abandonServerRequest:标记已应答不发帧;随后 respond 幂等;迟到重发被忽略', () => {
+  const { client, transport } = setup()
+  let calls = 0
+  client.registerServerRequestHandler('interaction/requestPermission', () => {
+    calls++
+    return undefined
+  })
+  client.handleFrame(permissionFrame('server-1', 'perm_1'))
+  assert.equal(calls, 1)
+  client.abandonServerRequest('server-1')
+  assert.equal(transport.sent.filter(isSuccessResponseFrame).length, 0)
+  assert.equal(transport.sent.filter(isErrorResponseFrame).length, 0)
+  client.respond('server-1', { decision: 'allow' })
+  assert.equal(transport.sent.filter(isSuccessResponseFrame).length, 0)
+  client.handleFrame(permissionFrame('server-2', 'perm_1'))
+  assert.equal(calls, 1)
+  client.dispose()
+})
+
+test('answeredServerFrameIds 防膨胀:大量应答后剪枝,interaction 去重不受影响', () => {
+  const { client, transport } = setup()
+  client.registerServerRequestHandler('custom/ping', (frame) => {
+    client.respond(frame.id, 'pong')
+    return undefined
+  })
+  for (let i = 0; i < 5000; i++) {
+    client.handleFrame({ id: `ping-${i}`, method: 'custom/ping', params: {} })
+  }
+  assert.equal(transport.sent.filter(isSuccessResponseFrame).length, 5000)
+  let permCalls = 0
+  client.registerServerRequestHandler('interaction/requestPermission', () => {
+    permCalls++
+    return undefined
+  })
+  client.handleFrame(permissionFrame('s-1', 'p1'))
+  client.handleFrame(permissionFrame('s-2', 'p1'))
+  assert.equal(permCalls, 1)
+  client.respond('s-1', { decision: 'allow' })
+  const responses = transport.sent.filter(isSuccessResponseFrame)
+  assert.equal(responses[responses.length - 1].id, 's-2')
+  client.dispose()
+})
