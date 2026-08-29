@@ -72,19 +72,30 @@ export class ProtocolTransport {
     this.sink = (data) => {
       child.stdin?.write(data)
     }
+    // 管道写端失效(子进程死亡/读端关闭)时写入会异步 emit 'error'(EPIPE);
+    // 无监听则成为进程级 uncaughtException(Node 18-22 宿主已知行为),必须吞掉
+    child.stdin?.on('error', () => {})
     child.stdout?.setEncoding('utf8')
     child.stdout?.on('data', (d: string) => this.handleData(d))
     child.stderr?.setEncoding('utf8')
     child.stderr?.on('data', (d: string) => this.handleStderrChunk(d))
     child.on('error', () => {
-      // spawn 失败(如 ENOENT)等价为退出
-      this.flushTail()
-      this.onExit?.({ code: null, signal: null })
+      this.notifyExit({ code: null, signal: null })
     })
     child.on('close', (code, signal) => {
-      this.flushTail()
-      this.onExit?.({ code, signal })
+      this.notifyExit({ code, signal })
     })
+  }
+
+  /** error 与 close 可能先后都触发(spawn ENOENT 实测双发),onExit 只允许一次 */
+  private exitNotified = false
+  private notifyExit(info: TransportExitInfo): void {
+    if (this.exitNotified) {
+      return
+    }
+    this.exitNotified = true
+    this.flushTail()
+    this.onExit?.(info)
   }
 
   /** 序列化并写入一帧(§1.2:`JSON.stringify(message) + "\n"`) */

@@ -2,12 +2,13 @@
   "name": "zcode-vscode",
   "displayName": "ZCode for VSCode",
   "description": "ZCode AI 编程助手集成:在侧边栏与 ZCode CLI 对话,流式输出、会话续接、附件上下文。",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "publisher": "mayuanyuan",
   "license": "MIT",
   "icon": "media/icon.png",
   "engines": {
-    "vscode": "^1.85.0"
+    "vscode": "^1.85.0",
+    "node": ">=20"
   },
   "categories": [
     "AI",
@@ -127,11 +128,6 @@
             "全自动:所有工具自动放行(CLI headless 默认)"
           ],
           "markdownDescription": "权限模式,对应 CLI `--mode`。headless 默认 yolo(全自动),请谨慎选择。"
-        },
-        "zcode.autoAttachActiveFile": {
-          "type": "boolean",
-          "default": false,
-          "description": "发送消息时自动附加当前活跃编辑器文件(等价于每次 --attach)。"
         }
       }
     },
@@ -153,12 +149,11 @@
     "compile": "node esbuild.js",
     "watch": "node esbuild.js --watch",
     "typecheck": "tsc --noEmit",
-    "test": "node --test",
+    "test": "tsc -p tsconfig.test.json && node --test $(find build-test -name '*.test.js')",
     "package": "tsc --noEmit && node esbuild.js --production",
     "vsix": "vsce package --no-dependencies"
   },
   "devDependencies": {
-    "@types/marked": "^6.0.0",
     "@types/node": "^20.14.0",
     "@types/vscode": "^1.85.0",
     "esbuild": "^0.24.0",

@@ -11,7 +11,7 @@ VSCode 扩展宿主
 ├── protocol/     ZCode Protocol v1 客户端(NDJSON stdio)
 │   ├── transport 帧收发/残行缓冲/stderr 日志
 │   └── client    请求配对/超时/interaction 去重(重发帧应答最新 id)
-├── controller/   SessionController:会话生命周期、事件投影(25 种 session/event)、
+├── controller/   SessionController:会话生命周期、事件投影(当前投影 9 种 session/event)、
 │                 崩溃自动重启(≤3 次)+ resume/afterSeq 续订、33ms 节流 UIState
 └── webview       纯渲染器:消息/部件/流式光标/工具卡/权限卡/会话下拉/上下文条
         ↕
@@ -91,13 +91,12 @@ npm install && npm run package && npx vsce package --no-dependencies
 | `zcode.nodePath` | `~/.zcode/server/node` | 运行 CLI 的 Node |
 | `zcode.cliPath` | `~/.zcode/server/agents/glm/zcode.cjs` | CLI 入口 |
 | `zcode.mode` | `yolo` | 新会话默认权限模式(**yolo=全自动放行,介意请改 build**) |
-| `zcode.autoAttachActiveFile` | `false` | 兼容旧版设置(协议模式下用上下文 chip) |
 
 ## 开发
 
 ```bash
 npm run typecheck          # tsc --noEmit
-node --test src/protocol/client.test.ts   # 协议层单测
+npm test                   # 全部单测(tsc 编译到 build-test/ 后运行,Node ≥20 可复现)
 node scripts/protocol-smoke.ts [ws] [prompt] [mode]  # 真实 CLI 集成冒烟
 node scripts/e2e-cdp.mjs   # 隔离实例 CDP 端到端(7 场景:权限+diff/停止/steer/rewind/fork/模式切换)
 ```
@@ -108,7 +107,7 @@ node scripts/e2e-cdp.mjs   # 隔离实例 CDP 端到端(7 场景:权限+diff/停
 
 - 协议为 ZCode 内部契约(逆向自 0.13.3 双 bundle,实测 0.15.2 兼容),CLI 大版本升级可能破坏兼容
 - 权限/工具卡在 webview 全量重渲染时 `<details>` 展开状态会重置(长对话场景待优化)
-- 编辑器内联 diff 审查(accept/reject)计划 v0.3(参考 Claude Code 双虚拟 FS 方案)
+- 编辑器内联 diff 审查(accept/reject)尚未实现(远期方向:参考 Claude Code 双虚拟 FS 方案)
 - 未信任(Restricted Mode)工作区扩展不激活
 
 ## License

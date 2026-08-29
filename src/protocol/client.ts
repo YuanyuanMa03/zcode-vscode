@@ -156,6 +156,11 @@ export class ProtocolClient {
     }
   }
 
+  /** 放弃应答(服务器已在别处结算该请求):仅标记幂等,不再发送任何帧 */
+  abandonServerRequest(id: FrameId): void {
+    this.routeServerFrameId(id)
+  }
+
   /** 通知回调(session/event | state.updated | prompt/enhance/result 等) */
   setOnNotification(cb: (method: string, params: unknown) => void): void {
     this.onNotification = cb
@@ -217,8 +222,14 @@ export class ProtocolClient {
       clearTimeout(entry.timer)
     }
     if (isErrorResponseFrame(frame)) {
-      const err = frame.error
-      entry.reject(new ProtocolRequestError(err.message, err.code, err.data))
+      // 防御畸形帧(isErrorResponseFrame 只查键存在):error:null/非对象时归一为 -32603,
+      // 否则此处同步抛 TypeError 会沿 stdout 'data' 事件炸穿扩展宿主
+      const raw = frame.error
+      const err: { code?: number; message?: string; data?: unknown } =
+        typeof raw === 'object' && raw !== null
+          ? (raw as { code?: number; message?: string; data?: unknown })
+          : { code: -32603, message: `protocol error: ${String(raw)}` }
+      entry.reject(new ProtocolRequestError(err.message ?? 'protocol error', err.code, err.data))
     } else {
       entry.resolve(frame.result)
     }
@@ -294,21 +305,29 @@ export class ProtocolClient {
     }
     const dedupKey = this.dedupKeyByFrameId.get(idKey)
     if (dedupKey === undefined) {
-      this.answeredServerFrameIds.add(idKey)
+      this.markAnswered(idKey)
       return id
     }
     const record = this.serverRequestsByDedupKey.get(dedupKey)
     if (!record) {
       // 记录已清理但旧 id 未标记(防御,正常路径不会到这)
-      this.answeredServerFrameIds.add(idKey)
+      this.markAnswered(idKey)
       return null
     }
     for (const seenId of record.ids) {
-      this.answeredServerFrameIds.add(seenId)
+      this.markAnswered(seenId)
       this.dedupKeyByFrameId.delete(seenId)
     }
     this.answeredDedupKeys.add(dedupKey)
     this.serverRequestsByDedupKey.delete(dedupKey)
     return record.frame.id
+  }
+
+  /** 已应答集只用于幂等去重,超限整体剪枝防无界增长(古老 id 的双响应风险可忽略) */
+  private markAnswered(idKey: string): void {
+    if (this.answeredServerFrameIds.size >= 4096) {
+      this.answeredServerFrameIds.clear()
+    }
+    this.answeredServerFrameIds.add(idKey)
   }
 }

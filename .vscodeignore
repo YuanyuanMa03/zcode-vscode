@@ -3,6 +3,11 @@ src/**
 node_modules/**
 esbuild.js
 tsconfig.json
+tsconfig.test.json
 .gitignore
+.github/**
+scripts/**
+docs/**
+build-test/**
 **/*.map
 **/*.ts
